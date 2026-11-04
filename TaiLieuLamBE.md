@@ -526,6 +526,82 @@ Khớp chuẩn xác 100% với `ApiStorageRepository` trên Flutter:
 }
 ```
 
+#### Bước 5: Quy chuẩn lưu trữ tệp vào CSDL MySQL (BẮT BUỘC TUÂN THỦ)
+
+##### A. Nguyên tắc cốt lõi:
+1. **Tệp Public (Ảnh đại diện, Ảnh chụp tài sản):**
+   - **Lưu trực tiếp Full CDN URL** vào cột CSDL: `${R2_PUBLIC_DOMAIN}/${file_key}`
+   - *Ví dụ:* `https://pub-your_public_id.r2.dev/avatars/1/avatar_1730000000.jpg`
+   - *Mục đích:* Frontend Flutter gọi trực tiếp `Image.network(url)` để hiển thị qua CDN tốc độ cao mà không cần thông qua Backend.
+2. **Tệp Private (Hợp đồng vay, CCCD, Sổ đỏ, Bảng lương):**
+   - **CHỈ LƯU DUY NHẤT `file_key`** (đường dẫn tương đối trên bucket).
+   - *Ví dụ:* `contracts/101/hop_dong_tin_dung.pdf` hoặc `legal-documents/101/cavet_xe.pdf`
+   - ⚠️ **CẤM TUYỆT ĐỐI:** Không lưu Presigned URL vào CSDL vì chữ ký sẽ hết hạn sau 10 phút (link sẽ chết và trả về lỗi `403 Forbidden`). Khi người dùng bấm xem, Frontend sẽ gọi `GET /api/v1/storage/view-url?file_key=...` để Backend sinh chữ ký mới động.
+
+##### B. Bảng đối chiếu các cột CSDL lưu trữ tệp:
+
+| Bảng CSDL | Cột lưu trữ | Loại tệp (Bucket) | Dữ liệu lưu trong CSDL MySQL |
+| :--- | :--- | :---: | :--- |
+| **`users`** | `avatar_url` | **Public** | `https://pub-xxxx.r2.dev/avatars/1/avatar_1730000000.jpg` |
+| **`loan_documents`** | `file_url` | **Private** | `contracts/101/hop_dong_vay_vinfast.pdf` *(Chỉ lưu file_key)* |
+| **`assets`** | `image_url` | **Public** | `https://pub-xxxx.r2.dev/collaterals/vinfast_vf8.jpg` |
+| **`assets`** | `legal_document_url` | **Private** | `legal-documents/101/so_do_dat.pdf` *(Chỉ lưu file_key)* |
+
+##### C. Code xử lý mẫu trong Controller Express.js (`storage.controller.js`):
+```javascript
+// POST /api/v1/storage/confirm-upload
+export async function confirmUpload(req, res) {
+  const { file_key, folder, metadata = {} } = req.body;
+  const isPublic = folder.startsWith('avatars') || folder.startsWith('collaterals');
+
+  // Nếu là Public: Ghép Full CDN URL để lưu CSDL
+  // Nếu là Private: Chỉ lấy file_key để lưu CSDL
+  const savedPath = isPublic
+    ? `${process.env.R2_PUBLIC_DOMAIN}/${file_key}`
+    : file_key;
+
+  // Cập nhật vào CSDL theo nghiệp vụ
+  if (folder.startsWith('avatars') && metadata.user_id) {
+    await pool.query('UPDATE users SET avatar_url = ? WHERE user_id = ?', [savedPath, metadata.user_id]);
+  } else if (folder.startsWith('contracts') && metadata.loan_id) {
+    await pool.query(
+      'INSERT INTO loan_documents (loan_id, document_type, file_url, ocr_status) VALUES (?, ?, ?, ?)',
+      [metadata.loan_id, metadata.document_type || 'CONTRACT', savedPath, 'PENDING']
+    );
+  }
+
+  res.json({
+    success: true,
+    download_url: isPublic ? savedPath : '',
+    file_key: file_key,
+  });
+}
+```
+
+#### Bước 6: Chiến lược Tối ưu hóa & Tiết kiệm chi phí Class A và Class B (Best Practices)
+
+Để bảo đảm hệ thống vận hành đạt chuẩn doanh nghiệp và luôn nằm gọn trong **Free Tier (100% miễn phí)** của Cloudflare R2:
+
+##### 1. Tối ưu Class A (Thao tác Ghi, Tạo, Liệt kê - Miễn phí 1.000.000 req/tháng):
+- **CẤM gọi `ListObjectsCommand` quét bucket trong API:** Tuyệt đối không viết code Backend duyệt qua toàn bộ bucket R2 để tìm file của người dùng. Mọi danh sách tài liệu (`file_key`, ngày tạo, kích thước) **phải được lưu và truy vấn từ MySQL (`loan_documents`, `assets`)**. Khi cần lấy danh sách hợp đồng, chỉ cần thực hiện `SELECT * FROM loan_documents WHERE loan_id = ?` $\rightarrow$ Tiêu tốn **0 lượt Class A** trên R2.
+- **Tải lên nhị phân trực tiếp (Direct Client-to-R2):** Mobile gửi thẳng binary lên Cloudflare R2 qua Presigned PUT URL. Tuyệt đối không upload file trung gian qua server Express rồi server mới đẩy lên R2 (vừa tốn gấp đôi request, vừa gây nghẽn băng thông và RAM của server).
+- **Hạn mức thời gian Presigned Upload hợp lý:** Đặt `R2_PRESIGNED_UPLOAD_EXPIRES=300` (5 phút) để Mobile có đủ thời gian upload ảnh/hợp đồng dung lượng lớn qua kết nối 4G/Wifi yếu, tránh lỗi timeout khiến ứng dụng phải gọi xin lại Presigned URL nhiều lần.
+
+##### 2. Tối ưu Class B (Thao tác Đọc, Tải xuống - Miễn phí 10.000.000 req/tháng):
+- **Bật CDN Edge Caching cho Bucket Public (Avatar, Ảnh xe/nhà):**
+  - Trong hàm `generateR2UploadUrl` (file `src/config/r2.js`), bổ sung `CacheControl` cho các tệp public:
+    ```javascript
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: fileKey,
+      ContentType: contentType,
+      CacheControl: isPublic ? 'public, max-age=31536000, immutable' : 'no-cache, private',
+    });
+    ```
+  - Khi đó, hàng triệu lượt người dùng lướt xem ảnh trên App sẽ được phục vụ trực tiếp từ mạng lưới **Cloudflare Global CDN Edge Cache** $\rightarrow$ Tiêu tốn **0 lượt Class B** tính vào R2 bucket!
+- **Tránh lạm dụng `HeadObjectCommand`:** Không gọi lệnh `HeadObject` để kiểm tra file tồn tại trước mỗi lần mở file. Hãy tin tưởng trạng thái lưu trong bảng MySQL (`file_url`, `ocr_status`).
+- **Tận dụng bộ nhớ đệm (Cache) trên Mobile:** Với các tài liệu Private (Hợp đồng, Sổ đỏ), link xem có thời hạn 10 phút (`600s`). Trong thời gian 10 phút này nếu người dùng chuyển tab và mở lại cùng một tài liệu, Mobile tái sử dụng link cũ thay vì gọi Backend sinh chữ ký mới.
+
 ---
 
 ## 5. MÃ NGUỒN MẪU KHỞI TẠO CÁC MODULE TRỌNG TÂM
@@ -576,6 +652,7 @@ export async function generateR2UploadUrl({ folder, fileName, contentType, isPub
     Bucket: bucketName,
     Key: fileKey,
     ContentType: contentType,
+    CacheControl: isPublic ? 'public, max-age=31536000, immutable' : 'no-cache, private',
   });
 
   const uploadUrl = await getSignedUrl(r2Client, command, { expiresIn });
