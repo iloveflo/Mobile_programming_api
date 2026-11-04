@@ -181,6 +181,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
       "full_name": "Nguyen Van Dev",
       "email": "dev@test.com",
       "phone": "0900000001",
+      "avatar_url": "https://pub-xxxx.r2.dev/avatars/1/avatar_1730000000.jpg",
       "monthly_income": 25000000.00,
       "date_of_birth": "1998-05-12",
       "id_card_number": "079201008888",
@@ -241,13 +242,46 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
 }
 ```
 
-#### 7. Đổi mật khẩu & Quên mật khẩu
+#### 7. Quản lý Thiết bị & Phiên làm việc (Active Sessions)
+- **Lấy danh sách phiên đăng nhập:** `GET /api/v1/auth/sessions` (Header: `Bearer <token>`)
+  - Truy vấn từ bảng `refresh_tokens`:
+    ```sql
+    SELECT token_id, device_name, platform, ip_address, location, last_active, expires_at 
+    FROM refresh_tokens 
+    WHERE user_id = ? AND revoked_at IS NULL AND expires_at > NOW() 
+    ORDER BY last_active DESC;
+    ```
+  - **Response `200 OK` (Khớp `SessionModel`):**
+    ```json
+    {
+      "success": true,
+      "data": [
+        {
+          "id": "1",
+          "device_name": "iPhone 15 Pro Max",
+          "platform": "iOS",
+          "ip_address": "118.69.182.20",
+          "location": "TP. Hồ Chí Minh, VN",
+          "last_active": "2026-11-04T12:30:00Z",
+          "is_current": true
+        }
+      ]
+    }
+    ```
+- **Thu hồi phiên làm việc từ xa (Đăng xuất thiết bị):** `DELETE /api/v1/auth/sessions/:sessionId`
+  - Cập nhật bảng `refresh_tokens`:
+    ```sql
+    UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_id = ? AND user_id = ?;
+    ```
+  - **Response `200 OK`:** `{ "success": true, "message": "Thu hồi phiên đăng nhập thành công." }`
+
+#### 8. Đổi mật khẩu & Quên mật khẩu
 - **Đổi mật khẩu:** `POST /api/v1/auth/change-password`
   - Body: `{ "current_password": "...", "new_password": "..." }`
 - **Đặt lại mật khẩu:** `POST /api/v1/auth/reset-password`
   - Body: `{ "new_password": "..." }` (Sau khi đã verify OTP)
 
-#### 8. Quản lý Hồ sơ & Bảo mật người dùng
+#### 9. Quản lý Hồ sơ & Bảo mật người dùng
 - **Xem thông tin hồ sơ:** `GET /api/v1/user/profile` -> Trả về object `user`.
 - **Cập nhật hồ sơ:** `PUT /api/v1/user/profile`
   - Body: `{ "full_name": "...", "monthly_income": 30000000, "occupation": "...", ... }`
@@ -261,7 +295,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
   ```
   - Cập nhật 2 cột `is_biometric_enabled` và `auto_lock_enabled` trong bảng `users`. Trả về `UserModel` đã cập nhật.
 
-#### 9. Tài khoản ngân hàng liên kết
+#### 10. Tài khoản ngân hàng liên kết
 - `GET /api/v1/user/bank-accounts`: Trả về danh sách từ bảng `bank_accounts`.
 - `POST /api/v1/user/bank-accounts`:
   - Body:
@@ -275,6 +309,44 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
   }
   ```
 - `DELETE /api/v1/user/bank-accounts/:id`: Xóa tài khoản ngân hàng.
+
+#### 11. Xuất hồ sơ năng lực tài chính (PDF)
+- **Method / Endpoint:** `GET /api/v1/user/financial-profile-pdf` (Header: `Bearer <token>`)
+- **Xử lý Backend:**
+  - Lấy thông tin user, điểm tín dụng (CIC score), thu nhập, danh sách khoản vay hiện hữu từ MySQL.
+  - Sử dụng `pdfkit` (hoặc template engine) sinh file PDF báo cáo tài chính.
+  - Tải file PDF lên bucket `fincredit-private` (thư mục `reports/`) hoặc bucket `fincredit-public`.
+  - Sinh đường dẫn tải về / xem tài liệu và trả về cho Frontend.
+- **Response `200 OK` (BẮT BUỘC ĐÚNG CẤU TRÚC CHO FLUTTER):**
+```json
+{
+  "success": true,
+  "data": {
+    "pdf_url": "https://pub-your_public_id.r2.dev/reports/fincredit_financial_report_1.pdf",
+    "file_key": "reports/fincredit_financial_report_1.pdf"
+  }
+}
+```
+
+#### 12. Cập nhật định danh điện tử eKYC C06
+- **Method / Endpoint:** `POST /api/v1/user/ekyc-verify` (Header: `Bearer <token>`)
+- **Body:**
+```json
+{
+  "id_card_number": "079201008888",
+  "front_card_url": "ekyc/1/cccd_front_1730000000.jpg",
+  "back_card_url": "ekyc/1/cccd_back_1730000000.jpg"
+}
+```
+- **Xử lý Backend:**
+  - Xác thực tính hợp lệ của số CCCD (12 số).
+  - Cập nhật thông tin vào bảng `users`:
+    ```sql
+    UPDATE users 
+    SET id_card_number = ?, is_ekyc_verified = TRUE, ekyc_tier = 'C06', updated_at = NOW() 
+    WHERE user_id = ?;
+    ```
+- **Response `200 OK`:** Trả về `UserModel` đã được cập nhật thành công kèm `is_ekyc_verified: true` và `ekyc_tier: 'C06'`.
 
 ---
 
@@ -347,6 +419,32 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
     "term_months": 60,
     "start_date": "2024-05-01"
   }
+}
+```
+
+#### 5. Danh sách tài liệu hợp đồng của khoản vay
+- **Method / Endpoint:** `GET /api/v1/loans/:loanId/documents` (Header: `Bearer <token>`)
+- **Truy vấn CSDL (bảng `loan_documents`):**
+  ```sql
+  SELECT document_id, loan_id, document_type, file_url, ocr_status, created_at 
+  FROM loan_documents 
+  WHERE loan_id = ? 
+  ORDER BY created_at DESC;
+  ```
+- **Response `200 OK` (Khớp `LoanDocumentModel`):**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "document_id": 1,
+      "loan_id": 101,
+      "document_type": "CONTRACT",
+      "file_url": "contracts/101/hop_dong_tin_dung_mb.pdf",
+      "ocr_status": "COMPLETED",
+      "created_at": "2026-11-01T08:00:00Z"
+    }
+  ]
 }
 ```
 
@@ -774,6 +872,39 @@ app.use((err, req, res, next) => {
 });
 
 export default app;
+```
+
+### 5.5. Tệp cấu hình biến môi trường mẫu (`.env.example`)
+```bash
+# Server Port & Môi trường
+PORT=3000
+NODE_ENV=development
+API_PREFIX=/api/v1
+CORS_ORIGIN=*
+
+# Kết nối MySQL Database (16 bảng trong credit_health_db.sql)
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your_mysql_password
+DB_NAME=credit_health_db
+DB_CONNECTION_LIMIT=20
+DB_TIMEZONE=+07:00
+
+# Bảo mật JWT
+JWT_SECRET=super_secret_jwt_key_fincredit_2026
+JWT_EXPIRES_IN=15m
+JWT_REFRESH_SECRET=super_secret_refresh_key_fincredit_2026
+JWT_REFRESH_EXPIRES_IN=7d
+
+# Lưu trữ Cloudflare R2
+R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=your_r2_access_key_id
+R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
+R2_BUCKET_PUBLIC=fincredit-public
+R2_BUCKET_PRIVATE=fincredit-private
+R2_PUBLIC_DOMAIN=https://pub-your_public_id.r2.dev
+R2_PRESIGNED_UPLOAD_EXPIRES=300
 ```
 
 ---
