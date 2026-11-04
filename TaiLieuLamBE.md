@@ -1,5 +1,5 @@
 # TÀI LIỆU HƯỚNG DẪN XÂY DỰNG BACKEND EXPRESS.JS (FINCREDIT API)
-> **Dành cho kỹ sư Backend:** Hướng dẫn chi tiết 100% khớp nối chuẩn xác với Flutter Frontend và CSDL MySQL `credit_health_db.sql`. Tuyệt đối tuân thủ các quy chuẩn DTO, mã lỗi HTTP và luồng nghiệp vụ dưới đây để không xảy ra sai lệch giao tiếp.
+> **Dành cho kỹ sư Backend:** Hướng dẫn chi tiết 100% khớp nối chuẩn xác với Flutter Frontend và CSDL PostgreSQL `credit_health_db.sql`. Tuyệt đối tuân thủ các quy chuẩn DTO, mã lỗi HTTP và luồng nghiệp vụ dưới đây để không xảy ra sai lệch giao tiếp.
 
 ---
 
@@ -7,7 +7,7 @@
 
 - **Platform:** Node.js (>= 18.x hoặc 20.x LTS)
 - **Framework:** Express.js (v4.x hoặc v5.x)
-- **Cơ sở dữ liệu:** MySQL 8.0 (Driver: `mysql2/promise`)
+- **Cơ sở dữ liệu:** PostgreSQL 14+ / 16+ / 17 (Driver: `pg` - `node-postgres`)
 - **Quản lý lưu trữ tệp (Cloudflare R2):** `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`
 - **Xác thực & Bảo mật:** `jsonwebtoken`, `bcryptjs`, `cors`, `helmet`, `express-rate-limit`
 - **Base URL Frontend gọi tới:**
@@ -28,7 +28,7 @@ backend/
 ├── src/
 │   ├── app.js                   # Cấu hình Express app, CORS, Middleware
 │   ├── config/
-│   │   ├── db.js                # MySQL2 Connection Pool
+│   │   ├── db.js                # PostgreSQL Connection Pool (pg.Pool)
 │   │   ├── r2.js                # S3 Client kết nối Cloudflare R2
 │   │   └── constants.js         # Mã lỗi, hằng số cấu hình
 │   ├── middlewares/
@@ -248,7 +248,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
     ```sql
     SELECT token_id, device_name, platform, ip_address, location, last_active, expires_at 
     FROM refresh_tokens 
-    WHERE user_id = ? AND revoked_at IS NULL AND expires_at > NOW() 
+    WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW() 
     ORDER BY last_active DESC;
     ```
   - **Response `200 OK` (Khớp `SessionModel`):**
@@ -271,7 +271,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
 - **Thu hồi phiên làm việc từ xa (Đăng xuất thiết bị):** `DELETE /api/v1/auth/sessions/:sessionId`
   - Cập nhật bảng `refresh_tokens`:
     ```sql
-    UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_id = ? AND user_id = ?;
+    UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_id = $1 AND user_id = $2;
     ```
   - **Response `200 OK`:** `{ "success": true, "message": "Thu hồi phiên đăng nhập thành công." }`
 
@@ -313,7 +313,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
 #### 11. Xuất hồ sơ năng lực tài chính (PDF)
 - **Method / Endpoint:** `GET /api/v1/user/financial-profile-pdf` (Header: `Bearer <token>`)
 - **Xử lý Backend:**
-  - Lấy thông tin user, điểm tín dụng (CIC score), thu nhập, danh sách khoản vay hiện hữu từ MySQL.
+  - Lấy thông tin user, điểm tín dụng (CIC score), thu nhập, danh sách khoản vay hiện hữu từ PostgreSQL.
   - Sử dụng `pdfkit` (hoặc template engine) sinh file PDF báo cáo tài chính.
   - Tải file PDF lên bucket `fincredit-private` (thư mục `reports/`) hoặc bucket `fincredit-public`.
   - Sinh đường dẫn tải về / xem tài liệu và trả về cho Frontend.
@@ -343,8 +343,8 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
   - Cập nhật thông tin vào bảng `users`:
     ```sql
     UPDATE users 
-    SET id_card_number = ?, is_ekyc_verified = TRUE, ekyc_tier = 'C06', updated_at = NOW() 
-    WHERE user_id = ?;
+    SET id_card_number = $1, is_ekyc_verified = TRUE, ekyc_tier = 'C06', updated_at = NOW() 
+    WHERE user_id = $2;
     ```
 - **Response `200 OK`:** Trả về `UserModel` đã được cập nhật thành công kèm `is_ekyc_verified: true` và `ekyc_tier: 'C06'`.
 
@@ -428,7 +428,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
   ```sql
   SELECT document_id, loan_id, document_type, file_url, ocr_status, created_at 
   FROM loan_documents 
-  WHERE loan_id = ? 
+  WHERE loan_id = $1 
   ORDER BY created_at DESC;
   ```
 - **Response `200 OK` (Khớp `LoanDocumentModel`):**
@@ -624,7 +624,7 @@ Khớp chuẩn xác 100% với `ApiStorageRepository` trên Flutter:
 }
 ```
 
-#### Bước 5: Quy chuẩn lưu trữ tệp vào CSDL MySQL (BẮT BUỘC TUÂN THỦ)
+#### Bước 5: Quy chuẩn lưu trữ tệp vào CSDL PostgreSQL (BẮT BUỘC TUÂN THỦ)
 
 ##### A. Nguyên tắc cốt lõi:
 1. **Tệp Public (Ảnh đại diện, Ảnh chụp tài sản):**
@@ -638,7 +638,7 @@ Khớp chuẩn xác 100% với `ApiStorageRepository` trên Flutter:
 
 ##### B. Bảng đối chiếu các cột CSDL lưu trữ tệp:
 
-| Bảng CSDL | Cột lưu trữ | Loại tệp (Bucket) | Dữ liệu lưu trong CSDL MySQL |
+| Bảng CSDL | Cột lưu trữ | Loại tệp (Bucket) | Dữ liệu lưu trong CSDL PostgreSQL |
 | :--- | :--- | :---: | :--- |
 | **`users`** | `avatar_url` | **Public** | `https://pub-xxxx.r2.dev/avatars/1/avatar_1730000000.jpg` |
 | **`loan_documents`** | `file_url` | **Private** | `contracts/101/hop_dong_vay_vinfast.pdf` *(Chỉ lưu file_key)* |
@@ -660,10 +660,10 @@ export async function confirmUpload(req, res) {
 
   // Cập nhật vào CSDL theo nghiệp vụ
   if (folder.startsWith('avatars') && metadata.user_id) {
-    await pool.query('UPDATE users SET avatar_url = ? WHERE user_id = ?', [savedPath, metadata.user_id]);
+    await pool.query('UPDATE users SET avatar_url = $1 WHERE user_id = $2', [savedPath, metadata.user_id]);
   } else if (folder.startsWith('contracts') && metadata.loan_id) {
     await pool.query(
-      'INSERT INTO loan_documents (loan_id, document_type, file_url, ocr_status) VALUES (?, ?, ?, ?)',
+      'INSERT INTO loan_documents (loan_id, document_type, file_url, ocr_status) VALUES ($1, $2, $3, $4)',
       [metadata.loan_id, metadata.document_type || 'CONTRACT', savedPath, 'PENDING']
     );
   }
@@ -681,7 +681,7 @@ export async function confirmUpload(req, res) {
 Để bảo đảm hệ thống vận hành đạt chuẩn doanh nghiệp và luôn nằm gọn trong **Free Tier (100% miễn phí)** của Cloudflare R2:
 
 ##### 1. Tối ưu Class A (Thao tác Ghi, Tạo, Liệt kê - Miễn phí 1.000.000 req/tháng):
-- **CẤM gọi `ListObjectsCommand` quét bucket trong API:** Tuyệt đối không viết code Backend duyệt qua toàn bộ bucket R2 để tìm file của người dùng. Mọi danh sách tài liệu (`file_key`, ngày tạo, kích thước) **phải được lưu và truy vấn từ MySQL (`loan_documents`, `assets`)**. Khi cần lấy danh sách hợp đồng, chỉ cần thực hiện `SELECT * FROM loan_documents WHERE loan_id = ?` $\rightarrow$ Tiêu tốn **0 lượt Class A** trên R2.
+- **CẤM gọi `ListObjectsCommand` quét bucket trong API:** Tuyệt đối không viết code Backend duyệt qua toàn bộ bucket R2 để tìm file của người dùng. Mọi danh sách tài liệu (`file_key`, ngày tạo, kích thước) **phải được lưu và truy vấn từ PostgreSQL (`loan_documents`, `assets`)**. Khi cần lấy danh sách hợp đồng, chỉ cần thực hiện `SELECT * FROM loan_documents WHERE loan_id = $1` $\rightarrow$ Tiêu tốn **0 lượt Class A** trên R2.
 - **Tải lên nhị phân trực tiếp (Direct Client-to-R2):** Mobile gửi thẳng binary lên Cloudflare R2 qua Presigned PUT URL. Tuyệt đối không upload file trung gian qua server Express rồi server mới đẩy lên R2 (vừa tốn gấp đôi request, vừa gây nghẽn băng thông và RAM của server).
 - **Hạn mức thời gian Presigned Upload hợp lý:** Đặt `R2_PRESIGNED_UPLOAD_EXPIRES=300` (5 phút) để Mobile có đủ thời gian upload ảnh/hợp đồng dung lượng lớn qua kết nối 4G/Wifi yếu, tránh lỗi timeout khiến ứng dụng phải gọi xin lại Presigned URL nhiều lần.
 
@@ -697,30 +697,76 @@ export async function confirmUpload(req, res) {
     });
     ```
   - Khi đó, hàng triệu lượt người dùng lướt xem ảnh trên App sẽ được phục vụ trực tiếp từ mạng lưới **Cloudflare Global CDN Edge Cache** $\rightarrow$ Tiêu tốn **0 lượt Class B** tính vào R2 bucket!
-- **Tránh lạm dụng `HeadObjectCommand`:** Không gọi lệnh `HeadObject` để kiểm tra file tồn tại trước mỗi lần mở file. Hãy tin tưởng trạng thái lưu trong bảng MySQL (`file_url`, `ocr_status`).
+- **Tránh lạm dụng `HeadObjectCommand`:** Không gọi lệnh `HeadObject` để kiểm tra file tồn tại trước mỗi lần mở file. Hãy tin tưởng trạng thái lưu trong bảng PostgreSQL (`file_url`, `ocr_status`).
 - **Tận dụng bộ nhớ đệm (Cache) trên Mobile:** Với các tài liệu Private (Hợp đồng, Sổ đỏ), link xem có thời hạn 10 phút (`600s`). Trong thời gian 10 phút này nếu người dùng chuyển tab và mở lại cùng một tài liệu, Mobile tái sử dụng link cũ thay vì gọi Backend sinh chữ ký mới.
 
 ---
 
 ## 5. MÃ NGUỒN MẪU KHỞI TẠO CÁC MODULE TRỌNG TÂM
 
-### 5.1. File `src/config/db.js` (Kết nối MySQL2)
+### 5.1. File `src/config/db.js` (Kết nối PostgreSQL qua `pg.Pool`)
 ```javascript
-import mysql from 'mysql2/promise';
+import pkg from 'pg';
+const { Pool } = pkg;
 import dotenv from 'dotenv';
 dotenv.config();
 
-const pool = mysql.createPool({
+const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT) || 3306,
-  user: process.env.DB_USER || 'root',
+  port: Number(process.env.DB_PORT) || 5432,
+  user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || 'credit_health_db',
-  waitForConnections: true,
-  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 20,
-  queueLimit: 0,
-  timezone: process.env.DB_TIMEZONE || '+07:00',
+  max: Number(process.env.DB_MAX_CLIENTS) || 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
+
+pool.on('error', (err) => {
+  console.error('[POSTGRES POOL ERROR]: Lỗi kết nối CSDL đột ngột:', err);
+});
+
+/**
+ * Hàm truy vấn rút gọn hỗ trợ async/await chuẩn PostgreSQL
+ * Trả về mảng dòng `rows` trực tiếp giúp code controller gọn gàng
+ */
+export async function query(text, params) {
+  const start = Date.now();
+  const res = await pool.query(text, params);
+  const duration = Date.now() - start;
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[PG QUERY]:', { text, duration: `${duration}ms`, rows: res.rowCount });
+  }
+  return res.rows;
+}
+
+/**
+ * Lắng nghe kênh sự kiện Real-time từ PostgreSQL Trigger (Section 19 trong credit_health_db.sql)
+ * Dùng một dedicated client để LISTEN và phát tín hiệu Socket.io xuống Mobile
+ */
+export async function setupRealtimeListener(io) {
+  const client = await pool.connect();
+  await client.query('LISTEN credit_health_realtime');
+  
+  client.on('notification', (msg) => {
+    try {
+      const payload = JSON.parse(msg.payload);
+      console.log(`[PG REALTIME EVENT] ${payload.table}:${payload.action}`, payload);
+      // Phát sự kiện tới room của user tương ứng
+      if (payload.data && payload.data.user_id) {
+        io.to(`user_${payload.data.user_id}`).emit('credit_health_update', payload);
+      } else {
+        io.emit('credit_health_update', payload);
+      }
+    } catch (err) {
+      console.error('[REALTIME PARSE ERROR]:', err);
+    }
+  });
+
+  client.on('error', (err) => {
+    console.error('[PG REALTIME CLIENT ERROR]:', err);
+  });
+}
 
 export default pool;
 ```
@@ -882,14 +928,13 @@ NODE_ENV=development
 API_PREFIX=/api/v1
 CORS_ORIGIN=*
 
-# Kết nối MySQL Database (16 bảng trong credit_health_db.sql)
+# Kết nối PostgreSQL Database (16 bảng trong credit_health_db.sql)
 DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=your_mysql_password
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_postgres_password
 DB_NAME=credit_health_db
-DB_CONNECTION_LIMIT=20
-DB_TIMEZONE=+07:00
+DB_MAX_CLIENTS=20
 
 # Bảo mật JWT
 JWT_SECRET=super_secret_jwt_key_fincredit_2026
@@ -911,7 +956,7 @@ R2_PRESIGNED_UPLOAD_EXPIRES=300
 
 ## 6. CHECKLIST KIỂM THỬ KHI KẾT NỐI VỚI FLUTTER FRONTEND
 
-1. [ ] **Chạy Database:** Đã import tệp `credit_health_db.sql` vào MySQL cục bộ và kiểm tra đủ 16 bảng.
+1. [ ] **Chạy Database:** Đã import tệp `credit_health_db.sql` vào PostgreSQL cục bộ (`psql -d credit_health_db -f credit_health_db.sql`) và kiểm tra đủ 16 bảng, 6 trigger cập nhật, 5 trigger real-time LISTEN/NOTIFY.
 2. [ ] **Kiểm tra CORS:** Đã cấu hình `CORS_ORIGIN=*` để tránh lỗi `XMLHttpRequest error` khi test trên Flutter Web/Chrome.
 3. [ ] **Kiểm tra IP:**
    - Android Emulator: Dùng `http://10.0.2.2:3000/api/v1`.
