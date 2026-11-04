@@ -1,0 +1,115 @@
+# ==============================================================================
+# Dependencies
+# ==============================================================================
+node_modules/
+jspm_packages/
+
+# ==============================================================================
+# Environment & Secrets (Không commit credentials/keys lên Git)
+# ==============================================================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*
+!.env.example
+
+# SSL & Security keys
+*.pem
+*.key
+*.cert
+*.crt
+
+# ==============================================================================
+# Logs & Process files
+# ==============================================================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Process management (pm2, nodemon, pid files)
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ==============================================================================
+# Runtime & Temporary files
+# ==============================================================================
+tmp/
+temp/
+*.tmp
+
+# Local Uploads / Media (Tránh lưu file upload của người dùng vào git)
+uploads/
+public/uploads/
+!uploads/.gitkeep
+!public/uploads/.gitkeep
+
+# ==============================================================================
+# Build, Output & Cache
+# ==============================================================================
+dist/
+build/
+out/
+.cache/
+.eslintcache
+.stylelintcache
+
+# ==============================================================================
+# Testing & Code Coverage
+# ==============================================================================
+coverage/
+.nyc_output/
+
+# ==============================================================================
+# Local Database & Dumps (SQLite, Redis, SQL backups)
+# ==============================================================================
+*.sqlite
+*.sqlite3
+*.db
+dump.rdb
+*.sql.gz
+
+# ==============================================================================
+# IDEs & Code Editors
+# ==============================================================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+
+# ==============================================================================
+# Operating System Files
+# ==============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+
+# Linux
+*~
+.directory

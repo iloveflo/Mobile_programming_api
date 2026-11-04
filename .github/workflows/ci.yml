@@ -1,0 +1,67 @@
+name: Express.js CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  workflow_dispatch:
+
+# Hủy các build đang chạy trước đó nếu có commit mới được push lên cùng branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Test & Lint (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+
+    env:
+      NODE_ENV: test
+      PORT: 3000
+      JWT_SECRET: test_jwt_access_secret_key_ci_environment_example_123456
+      JWT_REFRESH_SECRET: test_jwt_refresh_secret_key_ci_environment_example_123456
+
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Thiết lập môi trường Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Cài đặt Dependencies
+        run: npm ci
+
+      - name: Kiểm tra cú pháp cơ bản (Syntax Check)
+        run: |
+          node --check src/app.js
+          node --check bin/www
+
+      - name: Chạy Linter (nếu có script "lint")
+        run: npm run --if-present lint
+
+      - name: Chạy Unit/Integration Tests (nếu có script "test")
+        run: npm test --if-present
+
+      - name: Build ứng dụng (nếu có script "build")
+        run: npm run --if-present build
+
+      - name: Kiểm tra bảo mật gói thư viện (Security Audit)
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
