@@ -2,9 +2,14 @@
 // Theo hướng dẫn TaiLieuLamBE.md, Section 5.1
 
 import pkg from 'pg';
-const { Pool } = pkg;
+const { Pool, types } = pkg;
 import dotenv from 'dotenv';
 dotenv.config();
+
+// Tự động chuyển đổi PostgreSQL DECIMAL (1700) và BIGINT (20) sang kiểu number trong JS
+// Giúp Flutter client không bị lỗi cast: (json['...'] as num).toDouble()
+types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)));
+types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
 
 const pool = new Pool({
   host:     process.env.DB_HOST     || 'localhost',

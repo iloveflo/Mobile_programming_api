@@ -1,7 +1,7 @@
 {
   "name": "fincredit-api",
   "version": "1.0.0",
-  "description": "Backend API cho ứng dụng Quản lý Tín dụng Cá nhân FinCredit",
+  "description": "Backend Quản lý tín dụng cá nhân FinCredit",
   "type": "module",
   "main": "server.js",
   "scripts": {
