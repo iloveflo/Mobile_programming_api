@@ -153,22 +153,38 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
 - **Body:** `{ "identifier": "user@gmail.com" }` (hoặc lấy từ token phiên tạm)
 - **Response `200 OK`:** `{ "success": true, "message": "Đã gửi lại OTP." }`
 
-#### 4. Đăng nhập
+#### 4. Đăng nhập (Hỗ trợ tùy chọn Ghi nhớ đăng nhập - Remember Me)
 - **Method / Endpoint:** `POST /api/v1/auth/login` (hoặc `/api/auth/login`)
 - **Body:**
 ```json
 {
   "identifier": "dev@test.com",
-  "password": "Password123@"
+  "password": "Password123@",
+  "remember_me": true
 }
 ```
-*(Identifier có thể là email, số điện thoại hoặc số CCCD)*
-- **Xử lý Backend:**
+*(Ghi chú Body: `identifier` có thể là Email, Số điện thoại hoặc Số CCCD/Mã định danh; `remember_me` kiểu `boolean`, mặc định là `true` nếu Client không gửi kèm).*
+
+- **Quy trình Xử lý Backend:**
   - Kiểm tra tài khoản trong bảng `users`.
   - Nếu `is_locked = TRUE` hoặc `lock_until > NOW()`: Trả lỗi `403` với message: `"Tài khoản bị tạm khóa do vi phạm chính sách bảo mật."`
   - Nếu `is_active = FALSE`: Trả lỗi `403` với message: `"Tài khoản chưa được kích hoạt qua OTP."`
-  - So sánh mật khẩu bằng `bcryptjs.compare`. Nếu sai: tăng `failed_login_attempts`. Nếu `>= 5`: khóa tài khoản.
-  - Nếu đúng: reset `failed_login_attempts = 0`. Tạo JWT Access Token (`15m`) và Refresh Token (`7d`). Lưu session vào bảng `refresh_tokens`.
+  - So sánh mật khẩu bằng `bcryptjs.compare`. Nếu sai: tăng `failed_login_attempts`. Nếu `>= 5`: khóa tài khoản `is_locked = TRUE, lock_until = NOW() + INTERVAL '15 minutes'`.
+  - Nếu đúng mật khẩu: reset `failed_login_attempts = 0, lock_until = NULL`.
+  - **Xử lý Nghiệp vụ Ghi nhớ đăng nhập (`remember_me`):**
+    - **Khi `remember_me = true` (Người dùng chọn Ghi nhớ - Khuyên dùng cho thiết bị cá nhân):**
+      - Sinh JWT Access Token thời hạn ngắn (`15m` - 15 phút).
+      - Sinh Refresh Token dài hạn (`30d` - 30 ngày) và chèn một bản ghi vào bảng `refresh_tokens`:
+        ```sql
+        INSERT INTO refresh_tokens (user_id, token, device_name, platform, ip_address, expires_at)
+        VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '30 days');
+        ```
+      - Phía Flutter Client sẽ lưu bền vững Token và thông tin User vào tệp tin cục bộ (`SessionStorageService`). Khi mở lại ứng dụng, màn hình khởi động tự động khôi phục phiên và vào thẳng Trang chủ mà không cần nhập lại mật khẩu.
+    - **Khi `remember_me = false` (Người dùng bỏ chọn - Đăng nhập trên thiết bị dùng chung / máy lạ):**
+      - Sinh Access Token ngắn hạn (`15m`).
+      - Refresh Token chỉ có thời hạn ngắn tạm thời (`1d` - 24 giờ).
+      - Phía Flutter Client chỉ lưu tạm Token trong bộ nhớ RAM, **tuyệt đối không ghi đè vào tệp lưu trữ trên ổ đĩa** (`clearSession(keepMemoryCache: true)`). Khi người dùng tắt hẳn app (kill app) hoặc hết phiên, toàn bộ phiên bị xóa sạch và bắt buộc phải nhập lại mật khẩu tại màn hình Đăng nhập.
+
 - **Response `200 OK` (BẮT BUỘC KHỚP TRƯỜNG):**
 ```json
 {
@@ -176,6 +192,7 @@ Backend **BẮT BUỘC** trả về trường `message` hoặc `error` để Fro
   "data": {
     "token": "eyJhbGciOiJIUzI1Ni...",
     "accessToken": "eyJhbGciOiJIUzI1Ni...",
+    "refreshToken": "ref_token_sample_xyz...",
     "user": {
       "user_id": 1,
       "full_name": "Nguyen Van Dev",
