@@ -2,11 +2,22 @@
 import { query } from '../config/db.js';
 
 export const NotificationModel = {
-  async findByUserId(userId) {
-    return await query(
-      'SELECT notification_id, user_id, schedule_id, notification_type, channel, title, message, scheduled_at, sent_at, status, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
-      [userId]
-    );
+  async findByUserId(userId, { limit = 50, offset, page } = {}) {
+    let sql = `
+      SELECT notification_id, user_id, schedule_id, notification_type, channel, title, message, scheduled_at, sent_at, status, created_at
+      FROM notifications
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+    `;
+    const params = [userId];
+    const parsedLimit = Math.max(1, parseInt(limit, 10) || 50);
+    const parsedOffset = offset !== undefined
+      ? Math.max(0, parseInt(offset, 10) || 0)
+      : (page ? Math.max(0, (parseInt(page, 10) - 1) * parsedLimit) : 0);
+    params.push(parsedLimit, parsedOffset);
+    sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+
+    return await query(sql, params);
   },
 
   async create(data) {

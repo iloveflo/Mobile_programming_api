@@ -49,6 +49,7 @@ jobs:
 
       - name: Kiểm tra cú pháp cơ bản (Syntax Check)
         run: |
+          node --check server.js
           node --check src/app.js
           node --check bin/www
 

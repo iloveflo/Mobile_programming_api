@@ -44,6 +44,27 @@ export async function query(text, params) {
 }
 
 /**
+ * Thực thi một khối lệnh bên trong một Database Transaction (ACID).
+ * Tự động BEGIN, COMMIT khi thành công, và tự động ROLLBACK giải phóng client nếu có bất kỳ lỗi nào xảy ra.
+ * @param {Function} callback - async (client) => { await client.query(...); }
+ * @returns {Promise<any>} - Giá trị trả về từ callback
+ */
+export async function withTransaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Lắng nghe kênh LISTEN/NOTIFY từ PostgreSQL Trigger.
  * Trigger `credit_health_realtime` đã được định nghĩa trong credit_health_db.sql (Section 19).
  * Khi có INSERT/UPDATE/DELETE trên 5 bảng quan trọng, Trigger tự pg_notify()

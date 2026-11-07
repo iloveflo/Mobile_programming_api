@@ -48,11 +48,20 @@ export const CreditProfileModel = {
 // CREDIT REPORT MODEL
 // =========================================================
 export const CreditReportModel = {
-  async findByUserId(userId) {
-    return await query(
-      'SELECT * FROM credit_reports WHERE user_id = $1 ORDER BY generated_at DESC',
-      [userId]
-    );
+  async findByUserId(userId, { limit, offset, page } = {}) {
+    let sql = 'SELECT * FROM credit_reports WHERE user_id = $1 ORDER BY generated_at DESC';
+    const params = [userId];
+
+    if (limit !== undefined) {
+      const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
+      const parsedOffset = offset !== undefined
+        ? Math.max(0, parseInt(offset, 10) || 0)
+        : (page ? Math.max(0, (parseInt(page, 10) - 1) * parsedLimit) : 0);
+      params.push(parsedLimit, parsedOffset);
+      sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    }
+
+    return await query(sql, params);
   },
 
   async findById(reportId, userId) {

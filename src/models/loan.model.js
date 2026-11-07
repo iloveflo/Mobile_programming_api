@@ -2,7 +2,7 @@
 import { query } from '../config/db.js';
 
 export const LoanModel = {
-  async findByUserId(userId, { status, keyword, lender } = {}) {
+  async findByUserId(userId, { status, keyword, lender, limit, offset, page, sortBy, sortOrder } = {}) {
     let sql = `
       SELECT l.*, lt.type_code, lt.type_name
       FROM loans l
@@ -26,7 +26,28 @@ export const LoanModel = {
       sql += ` AND (l.loan_name ILIKE $${params.length} OR l.lender_name ILIKE $${params.length})`;
     }
 
-    sql += ' ORDER BY l.created_at DESC';
+    // Whitelist bảo vệ an toàn cho Dynamic Sorting
+    const SORTABLE_COLUMNS = {
+      created_at: 'l.created_at',
+      start_date: 'l.start_date',
+      principal_amount: 'l.principal_amount',
+      outstanding_amount: 'l.outstanding_amount',
+      loan_name: 'l.loan_name',
+    };
+    const sortCol = SORTABLE_COLUMNS[sortBy] || 'l.created_at';
+    const sortDir = (sortOrder || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    sql += ` ORDER BY ${sortCol} ${sortDir}`;
+
+    // Hỗ trợ phân trang tùy chọn (Pagination)
+    if (limit !== undefined) {
+      const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
+      const parsedOffset = offset !== undefined
+        ? Math.max(0, parseInt(offset, 10) || 0)
+        : (page ? Math.max(0, (parseInt(page, 10) - 1) * parsedLimit) : 0);
+      params.push(parsedLimit, parsedOffset);
+      sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    }
+
     return await query(sql, params);
   },
 

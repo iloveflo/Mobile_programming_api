@@ -6,6 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
+import { query } from './config/db.js';
 
 // Import tất cả Router
 import authRoutes from './routes/auth.routes.js';
@@ -75,10 +76,30 @@ app.use('/notifications',         scheduleRoutes);
 app.use('/api/storage',           storageRoutes);
 
 // =========================================================
-// ROUTE KIỂM TRA SỨC KHỎE SERVER (Health Check)
+// ROUTE KIỂM TRA SỨC KHỎE SERVER & DATABASE (Health Check)
 // =========================================================
 app.get('/', (req, res) => {
   res.json({ success: true, message: 'FinCredit API is running 🚀', version: '1.0.0' });
+});
+
+app.get('/health', async (req, res) => {
+  try {
+    const result = await query('SELECT NOW() as current_time, count(*)::int as total_users FROM users;');
+    res.json({
+      success: true,
+      status: 'healthy',
+      database: 'connected',
+      db_time: result[0]?.current_time,
+      users_count: result[0]?.total_users,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      status: 'unhealthy',
+      database: 'disconnected',
+      error: error.message,
+    });
+  }
 });
 
 // =========================================================

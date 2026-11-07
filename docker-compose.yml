@@ -1,0 +1,53 @@
+services:
+  # -------------------------------------------------------------
+  # 1. DATABASE CONTAINER (PostgreSQL 16)
+  # Tự động nạp schema & dữ liệu từ credit_health_db.sql khi khởi tạo lần đầu
+  # -------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: fincredit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-your_postgres_password_here}
+      POSTGRES_DB: ${DB_NAME:-credit_health_db}
+    ports:
+      - "${HOST_DB_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./credit_health_db.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-credit_health_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------
+  # 2. BACKEND & NGINX CONTAINER (Node.js + Nginx via Supervisord)
+  # Nginx chạy ngầm làm reverse-proxy & websocket trung chuyển cho Express
+  # -------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fincredit-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres
+      - DB_PORT=5432
+    ports:
+      - "3000:80"   # Ánh xạ port 3000 (Android Emulator 10.0.2.2:3000) vào Nginx cổng 80
+      - "80:80"     # Truy cập trực tiếp qua cổng 80 chuẩn HTTP
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    name: fincredit_postgres_data

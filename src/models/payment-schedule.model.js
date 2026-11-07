@@ -2,7 +2,7 @@
 import { query } from '../config/db.js';
 
 export const PaymentScheduleModel = {
-  async findByFilters({ loan_id, user_id }) {
+  async findByFilters({ loan_id, user_id, limit, offset, page } = {}) {
     let sql = `
       SELECT ps.*, l.loan_name, l.lender_name
       FROM payment_schedules ps
@@ -22,6 +22,16 @@ export const PaymentScheduleModel = {
     }
 
     sql += ' ORDER BY ps.due_date ASC, ps.installment_number ASC';
+
+    if (limit !== undefined) {
+      const parsedLimit = Math.max(1, parseInt(limit, 10) || 50);
+      const parsedOffset = offset !== undefined
+        ? Math.max(0, parseInt(offset, 10) || 0)
+        : (page ? Math.max(0, (parseInt(page, 10) - 1) * parsedLimit) : 0);
+      params.push(parsedLimit, parsedOffset);
+      sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    }
+
     return await query(sql, params);
   },
 
