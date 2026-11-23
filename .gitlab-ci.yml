@@ -1,0 +1,74 @@
+stages:
+  - test
+  - build
+  - deploy
+
+test_job:
+  stage: test
+  image: node:20-alpine
+  tags:
+    - my-debian-runner
+  variables:
+    NODE_ENV: test
+    PORT: 3000
+    JWT_SECRET: test_jwt_access_secret_key_ci_environment_example_123456
+    JWT_REFRESH_SECRET: test_jwt_refresh_secret_key_ci_environment_example_123456
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "develop"
+  script:
+    - npm ci
+    - node --check server.js
+    - node --check bin/www
+    - npm run check
+    - node --input-type=module -e "await import('./src/app.js'); await import('./src/services/push.service.js'); await import('./src/services/pdf.service.js'); await import('./src/middlewares/idempotency.middleware.js'); console.log('All backend modules loaded cleanly.');"
+    - npm run --if-present lint
+    - |
+      if [ -f credit_health_db.sql ]; then
+        npm test --if-present
+      else
+        echo "Skipping DB integration tests: credit_health_db.sql is not tracked in git."
+      fi
+    - npm audit --audit-level=high || true
+
+build_job:
+  stage: build
+  needs:
+    - test_job
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  tags:
+    - my-debian-runner
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_BUILDKIT: 1
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker pull $CI_REGISTRY_IMAGE:latest || true
+    - >
+      docker build
+      --cache-from $CI_REGISTRY_IMAGE:latest
+      -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+      -t $CI_REGISTRY_IMAGE:latest
+      -f Dockerfile .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+
+deploy_job:
+  stage: deploy
+  needs:
+    - build_job
+  image: alpine:latest
+  tags:
+    - my-debian-runner
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - 'curl -fsSL -X POST "$COOLIFY_WEBHOOK_URL" -H "Authorization: Bearer $COOLIFY_API_TOKEN"'

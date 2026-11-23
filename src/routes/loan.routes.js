@@ -1,0 +1,14 @@
+import { Router } from 'express';
+import { authenticateToken } from '../middlewares/auth.middleware.js';
+import { idempotencyMiddleware } from '../middlewares/idempotency.middleware.js';
+import * as c from '../controllers/loan.controller.js';
+const router = Router(); router.use(authenticateToken);
+router.get('/', c.getLoans); router.post('/', idempotencyMiddleware, c.createLoan);
+router.post('/ocr-scan', c.ocrScan);
+router.get('/:loanId', c.getLoanDetail); router.put('/:loanId', idempotencyMiddleware, c.updateLoan); router.delete('/:loanId', c.deleteLoan);
+router.get('/:loanId/assets', c.getLoanAssets); router.get('/:loanId/documents', c.getLoanDocuments);
+export const collateralRoutes = Router(); collateralRoutes.use(authenticateToken);
+collateralRoutes.get('/', c.getLoanAssets); collateralRoutes.post('/', idempotencyMiddleware, c.addCollateral);
+collateralRoutes.post('/:assetId/link', idempotencyMiddleware, c.linkCollateral);
+collateralRoutes.delete('/:assetId', c.deleteCollateral);
+export default router;
