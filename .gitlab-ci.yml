@@ -71,4 +71,24 @@ deploy_job:
   before_script:
     - apk add --no-cache curl
   script:
-    - 'curl -fsSL -X POST "$COOLIFY_WEBHOOK_URL" -H "Authorization: Bearer $COOLIFY_API_TOKEN"'
+    - |
+      coolify_ok=false
+      if [ -n "${COOLIFY_WEBHOOK_URL:-}" ]; then
+        if curl -fsSL --max-time 15 -X POST "$COOLIFY_WEBHOOK_URL" -H "Authorization: Bearer $COOLIFY_API_TOKEN"; then
+          coolify_ok=true
+        else
+          echo "Coolify deploy webhook failed, continuing to Render..."
+        fi
+      fi
+      render_ok=false
+      if [ -n "${RENDER_DEPLOY_HOOK_URL:-}" ]; then
+        if curl -fsSL --max-time 15 -X POST "$RENDER_DEPLOY_HOOK_URL"; then
+          render_ok=true
+        else
+          echo "Render deploy webhook failed."
+        fi
+      fi
+      if [ "$coolify_ok" = false ] && [ "$render_ok" = false ]; then
+        echo "Both Coolify and Render deploy webhooks failed or were not configured."
+        exit 1
+      fi
