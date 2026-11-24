@@ -162,9 +162,11 @@ test('failed login persists counters, temporary lock expires, admin lock persist
 test('R2 presigning, ownership, confirmation idempotency and private PDF export', async () => {
   Object.assign(process.env,r2Env);
   const { r2Client } = await import('../src/config/r2.js');
-  const originalSend = r2Client.send; let pdfBuffer; let headCalls=0;
+  const originalSend = r2Client.send; let pdfBuffer; let headCalls=0; let deletedKeys=[]; let fakeBody = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]);
   r2Client.send = async command => {
     if(command.constructor.name==='HeadObjectCommand') { headCalls++; return { ContentType:'image/jpeg',ContentLength:1024 }; }
+    if(command.constructor.name==='GetObjectCommand') { return { Body: fakeBody }; }
+    if(command.constructor.name==='DeleteObjectCommand') { deletedKeys.push(command.input.Key); return {}; }
     if(command.constructor.name==='PutObjectCommand') { pdfBuffer=command.input.Body; return {}; }
     throw new Error('Unexpected storage operation');
   };
@@ -182,6 +184,20 @@ test('R2 presigning, ownership, confirmation idempotency and private PDF export'
     const viewed=await request(`/api/v1/storage/view-url?file_key=${encodeURIComponent(contract.file_key)}`,{auth:secondToken}); assert.equal(viewed.status,200); assert.match(viewed.view_url,/X-Amz-Signature=/);
     assert.equal(headCalls,2);
     const pdf=ok(await request('/api/v1/user/financial-profile-pdf',{auth:secondToken})); assert.match(pdf.file_key,/^reports\/1\//); assert.match(pdf.pdf_url,/X-Amz-Signature=/); assert.equal(pdfBuffer.subarray(0,5).toString(),'%PDF-'); assert.ok(pdfBuffer.length>1000);
+
+    // Magic Bytes: từ chối tệp giả mạo Content-Type (HTML/SVG giả JPEG) và tự xóa object trên R2
+    const spoofed=ok(await request('/api/v1/storage/presigned-url',{auth:secondToken,method:'POST',body:{folder:'avatars',file_name:'spoof.jpg',content_type:'image/jpeg',is_public:true}}));
+    fakeBody=Buffer.from('<svg onload=alert(1)>');
+    assert.equal((await request('/api/v1/storage/confirm-upload',{auth:secondToken,method:'POST',body:{folder:'avatars',file_key:spoofed.file_key}})).status,400);
+    assert.ok(deletedKeys.includes(spoofed.file_key));
+
+    // addCollateral: từ chối image_url ngoài, chỉ chấp nhận file_key đã confirm thuộc sở hữu user
+    assert.equal((await request('/api/v1/collaterals',{auth:secondToken,method:'POST',body:{asset_name:'Xe test',asset_type:'VEHICLE',estimated_value:50000000,image_url:'https://evil.example/fake.jpg'}})).status,400);
+    fakeBody=Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]);
+    const colImg=ok(await request('/api/v1/storage/presigned-url',{auth:secondToken,method:'POST',body:{folder:'collaterals',file_name:'car.jpg',content_type:'image/jpeg',is_public:true}}));
+    await request('/api/v1/storage/confirm-upload',{auth:secondToken,method:'POST',body:{folder:'collaterals',file_key:colImg.file_key}});
+    const createdCol=ok(await request('/api/v1/collaterals',{auth:secondToken,method:'POST',body:{asset_name:'Xe hợp lệ',asset_type:'VEHICLE',estimated_value:50000000,image_url:colImg.file_key}}),201);
+    assert.ok(createdCol.image_url.includes(colImg.file_key));
   } finally { r2Client.send=originalSend; for(const key of Object.keys(r2Env)) process.env[key]=''; }
 });
 test('OTP failed attempts persist, resend cooldown and expiry are enforced', async () => {

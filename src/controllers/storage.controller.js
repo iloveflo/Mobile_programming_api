@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { HeadObjectCommand } from '@aws-sdk/client-s3';
+import { HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { generateR2UploadUrl, generateR2ViewUrl, deleteR2Object, r2Client, requireR2 } from '../config/r2.js';
 import { rows, one, found, insert, text, choice, number, fail } from '../utils/api.js';
 import { ownedLoan } from '../services/loan.service.js';
@@ -7,6 +7,49 @@ import { withTransaction } from '../config/db.js';
 const publicFolders = ['avatars','collaterals'];
 const folders = [...publicFolders,'contracts','legal-documents','ekyc','payslips'];
 const wrap = fn => async (req,res,next) => { try { res.json({ success: true, ...await fn(req) }); } catch(e) { next(e); } };
+
+async function readHeadBytes(body, maxBytes = 32) {
+  if (!body) return Buffer.alloc(0);
+  if (Buffer.isBuffer(body)) return body.subarray(0, maxBytes);
+  if (body instanceof Uint8Array) return Buffer.from(body.subarray(0, maxBytes));
+  if (typeof body.transformToByteArray === 'function') {
+    const arr = await body.transformToByteArray();
+    return Buffer.from(arr.subarray(0, maxBytes));
+  }
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of body) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(buf);
+    total += buf.length;
+    if (total >= maxBytes) break;
+  }
+  return Buffer.concat(chunks).subarray(0, maxBytes);
+}
+
+function matchesMagicBytes(buf, contentType) {
+  if (!buf || buf.length < 4) return false;
+  switch (contentType) {
+    case 'image/jpeg':
+      return buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF;
+    case 'image/png':
+      return (
+        buf.length >= 8 &&
+        buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
+        buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A
+      );
+    case 'image/webp':
+      return (
+        buf.length >= 12 &&
+        buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        buf.subarray(8, 12).toString('ascii') === 'WEBP'
+      );
+    case 'application/pdf':
+      return buf.subarray(0, 4).toString('ascii') === '%PDF';
+    default:
+      return false;
+  }
+}
 export const getPresignedUrl = wrap(async req => {
   requireR2();
   const folder = choice(req.body.folder, 'folder', folders);
@@ -27,12 +70,28 @@ export const confirmUpload = wrap(async req => {
   if (req.body.folder !== file.folder) fail(400, 'Thư mục không khớp tệp tải lên.');
   const meta = req.body.metadata || {};
   if (meta.user_id !== undefined && String(meta.user_id) !== String(req.user.user_id)) fail(403, 'Không có quyền cập nhật người dùng khác.');
-  // One HEAD at confirmation validates upload completion. Views never issue HEAD/list requests.
+  // One HEAD + 32-byte magic-byte check at confirmation validates upload completion and real file type.
   if (!file.confirmed_at) {
+    const bucket = file.is_public ? process.env.R2_BUCKET_PUBLIC : process.env.R2_BUCKET_PRIVATE;
     let object;
-    try { object = await r2Client.send(new HeadObjectCommand({ Bucket: file.is_public ? process.env.R2_BUCKET_PUBLIC : process.env.R2_BUCKET_PRIVATE, Key: key })); }
+    try { object = await r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })); }
     catch (e) { if (e.$metadata?.httpStatusCode === 404) fail(400, 'Tệp chưa được tải lên R2.'); throw e; }
-    if (object.ContentType !== file.content_type || !object.ContentLength || object.ContentLength > Number(process.env.MAX_UPLOAD_BYTES || 20971520)) fail(400, 'Tệp không đúng định dạng hoặc vượt dung lượng cho phép.');
+    if (object.ContentType !== file.content_type || !object.ContentLength || object.ContentLength > Number(process.env.MAX_UPLOAD_BYTES || 10485760)) {
+      await deleteR2Object({ fileKey: key, isPublic: file.is_public });
+      fail(400, 'Tệp không đúng định dạng hoặc vượt dung lượng cho phép.');
+    }
+    let headObj;
+    try {
+      headObj = await r2Client.send(new GetObjectCommand({ Bucket: bucket, Key: key, Range: 'bytes=0-31' }));
+    } catch (e) {
+      if (e.$metadata?.httpStatusCode === 404) fail(400, 'Tệp chưa được tải lên R2.');
+      throw e;
+    }
+    const headerBytes = await readHeadBytes(headObj?.Body, 32);
+    if (!matchesMagicBytes(headerBytes, file.content_type)) {
+      await deleteR2Object({ fileKey: key, isPublic: file.is_public });
+      fail(400, 'Nội dung tệp không khớp với định dạng đã khai báo.');
+    }
   }
   const saved = file.is_public ? `${process.env.R2_PUBLIC_DOMAIN.replace(/\/$/, '')}/${key}` : key;
   const oldObjectsToDelete = [];

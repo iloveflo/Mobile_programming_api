@@ -103,6 +103,21 @@ export const addCollateral = endpoint(async req => {
     );
     if (!uploaded) fail(400, 'Giấy tờ pháp lý tài sản chưa được tải lên và xác nhận.');
   }
+  let imageUrl = null;
+  if (b.image_url) {
+    const rawImage = text(b.image_url, 'image_url', 500);
+    const publicPrefix = process.env.R2_PUBLIC_DOMAIN ? `${process.env.R2_PUBLIC_DOMAIN.replace(/\/$/, '')}/` : '';
+    const imageKey = publicPrefix && rawImage.startsWith(publicPrefix) ? rawImage.slice(publicPrefix.length) : rawImage;
+    if (/^https?:/i.test(imageKey) || imageKey.includes('..')) {
+      fail(400, 'Đường dẫn ảnh tài sản không hợp lệ.');
+    }
+    const uploadedImg = await one(
+      "SELECT file_key, is_public FROM storage_uploads WHERE file_key=$1 AND user_id=$2 AND folder IN ('collaterals','legal-documents') AND confirmed_at IS NOT NULL",
+      [imageKey, req.user.user_id],
+    );
+    if (!uploadedImg) fail(400, 'Ảnh tài sản chưa được tải lên và xác nhận.');
+    imageUrl = uploadedImg.is_public && publicPrefix ? `${publicPrefix}${uploadedImg.file_key}` : uploadedImg.file_key;
+  }
   const created = await withTransaction(async db => {
     const asset = await insert('assets', {
       user_id: req.user.user_id,
@@ -113,7 +128,7 @@ export const addCollateral = endpoint(async req => {
       valuation_date: b.valuation_date ? date(b.valuation_date, 'valuation_date') : null,
       certificate_number: b.certificate_number ? text(b.certificate_number, 'certificate_number') : null,
       legal_document_url: legalDocUrl,
-      image_url: b.image_url ? text(b.image_url, 'image_url', 500) : null,
+      image_url: imageUrl,
       description: b.description ? text(b.description, 'description', 5000) : null,
     }, db);
     if (b.loan_id) {

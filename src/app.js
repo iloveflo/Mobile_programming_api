@@ -24,9 +24,12 @@ app.use((req,res,next) => { req.body ??= {}; next(); });
 const limitMessage = { success: false, message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau.' };
 app.use(rateLimit({ windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000), limit: Number(process.env.RATE_LIMIT_MAX || 300), standardHeaders: 'draft-7', legacyHeaders: false, message: limitMessage }));
 const authLimit = rateLimit({ windowMs: 900000, limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 30), standardHeaders: 'draft-7', legacyHeaders: false, message: limitMessage });
+const sensitiveActionLimit = rateLimit({ windowMs: Number(process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS || 900000), limit: Number(process.env.SENSITIVE_RATE_LIMIT_MAX || 40), standardHeaders: 'draft-7', legacyHeaders: false, message: limitMessage });
 const routes = { auth: authRoutes, user: userRoutes, loans: loanRoutes, collaterals: collateralRoutes, 'credit-profile': creditRoutes, 'credit-reports': reportRoutes, 'debt-strategies': debtRoutes, 'payment-schedules': scheduleRoutes, notifications: notificationRoutes, simulations: simulationRoutes, storage: storageRoutes };
 for (const prefix of new Set([process.env.API_PREFIX || '/api/v1', '/api', ''])) {
   app.use(`${prefix}/auth`, authLimit);
+  app.use(`${prefix}/storage/presigned-url`, sensitiveActionLimit);
+  app.use(`${prefix}/user/ekyc`, sensitiveActionLimit);
   for (const [name, router] of Object.entries(routes)) app.use(`${prefix}/${name}`, router);
 }
 app.get('/', (req,res) => res.json({ success: true, message: 'FinCredit API is running', version: '1.0.0' }));
