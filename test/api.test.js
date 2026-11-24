@@ -9,6 +9,7 @@ process.env.JWT_SECRET = 'integration-test-secret-only-01234567890123456789';
 process.env.RATE_LIMIT_MAX = '10000';
 process.env.AUTH_RATE_LIMIT_MAX = '10000';
 process.env.OTP_DELIVERY = 'console';
+process.env.CORS_ORIGIN = '';
 // No test uses the operator's live database, SMTP, R2, OCR or C06 credentials.
 for (const key of ['OCR_PROVIDER_URL','EKYC_PROVIDER_URL','R2_ENDPOINT','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY','R2_BUCKET_PUBLIC','R2_BUCKET_PRIVATE','R2_PUBLIC_DOMAIN']) process.env[key] = '';
 const r2Env = { R2_ENDPOINT: 'https://test.r2.cloudflarestorage.com', R2_ACCESS_KEY_ID: 'test-key', R2_SECRET_ACCESS_KEY: 'test-secret', R2_BUCKET_PUBLIC: 'test-public', R2_BUCKET_PRIVATE: 'test-private', R2_PUBLIC_DOMAIN: 'https://cdn.example.test' };
@@ -51,7 +52,13 @@ test('schedule math: zero interest, month ends, flat/reducing and rounding', () 
   assert.equal(reducing[0].interest_amount,120000); assert.equal(reducing[11].interest_amount,10000); assert.equal(flat[11].interest_amount,120000);
 });
 test('health, unknown endpoints and protected routes', async () => {
-  ok(await request('/health',{auth:null})); assert.equal((await request('/missing',{auth:null})).status,404);
+  const health = await fetch(base + '/health', { headers: { Origin: 'https://evil.example' } });
+  assert.equal(health.status, 200);
+  assert.equal(health.headers.get('x-frame-options'), 'DENY');
+  assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(health.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(health.headers.get('access-control-allow-origin'), null);
+  assert.equal((await request('/missing',{auth:null})).status,404);
   assert.equal((await request('/api/v1/user/profile',{auth:null})).status,401);
 });
 test('registration, challenge OTP binding and one-time verification', async () => {

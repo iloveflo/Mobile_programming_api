@@ -1,8 +1,14 @@
 import { Server } from 'socket.io';
 import { authenticate } from '../services/auth.service.js';
 export function setupSocketServer(httpServer) {
-  const origin = !process.env.CORS_ORIGIN || process.env.CORS_ORIGIN === '*' ? '*' : process.env.CORS_ORIGIN.split(',').map(v => v.trim());
-  const io = new Server(httpServer, { cors: { origin, methods: ['GET','POST'] } });
+  const rawCorsOrigin = (process.env.CORS_ORIGIN || '').trim();
+  const origin =
+    !rawCorsOrigin || (rawCorsOrigin === '*' && process.env.NODE_ENV === 'production')
+      ? false
+      : rawCorsOrigin === '*'
+        ? '*'
+        : rawCorsOrigin.split(',').map(v => v.trim()).filter(Boolean);
+  const io = new Server(httpServer, origin ? { cors: { origin, methods: ['GET', 'POST'] } } : {});
   io.use(async (socket,next) => {
     try { socket.claims = await authenticate(socket.handshake.auth?.token); next(); }
     catch { next(new Error('Socket: Phiên đăng nhập không hợp lệ.')); }
