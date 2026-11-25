@@ -2,6 +2,7 @@ import { endpoint, rows, one, found, insert, update, pick, text, number, boolean
 import { query } from '../config/db.js';
 import { withTransaction } from '../config/db.js';
 import { callProvider } from '../services/provider.service.js';
+import { calculateProfile } from '../services/credit.service.js';
 import { financialPdf, generateFinancialPdfBuffer } from '../services/pdf.service.js';
 export const getProfile = endpoint(async req => safeUser(found(await one('SELECT * FROM users WHERE user_id=$1', [req.user.user_id]))));
 export const updateProfile = endpoint(async req => {
@@ -13,7 +14,14 @@ export const updateProfile = endpoint(async req => {
   if (b.monthly_income !== undefined) number(b.monthly_income, 'monthly_income');
   if (b.date_of_birth !== undefined) b.date_of_birth = date(b.date_of_birth, 'date_of_birth');
   for (const key of ['full_name','address','occupation','workplace','contract_type']) if (b[key] !== undefined) text(b[key], key, key === 'address' ? 255 : key === 'workplace' ? 150 : 100);
-  return safeUser(await update('users', b, 'user_id=$1', [req.user.user_id]));
+  const updatedUser = await withTransaction(async db => {
+    const user = await update('users', b, 'user_id=$1', [req.user.user_id], db);
+    if (b.monthly_income !== undefined) {
+      await calculateProfile(req.user.user_id, db);
+    }
+    return user;
+  });
+  return safeUser(updatedUser);
 });
 export const updateSecuritySettings = endpoint(async req => {
   const b = pick(req.body, ['is_biometric_enabled','auto_lock_enabled']); booleans(b, Object.keys(b));

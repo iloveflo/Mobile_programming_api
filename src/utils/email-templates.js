@@ -236,7 +236,9 @@ export function renderOtpEmail({ fullName, code, purpose = 'REGISTER', expiresSe
   const minutes = Math.max(1, Math.round(Number(expiresSeconds) / 60));
   const purposeLabel = purpose === 'RESET_PASSWORD'
     ? 'đặt lại mật khẩu'
-    : 'xác thực đăng ký tài khoản';
+    : purpose === 'LOGIN_DEVICE'
+      ? 'xác thực đăng nhập thiết bị mới'
+      : 'xác thực đăng ký tài khoản';
 
   const html = wrapFinCreditLayout({
     title: 'Mã xác thực OTP của Quý khách',

@@ -30,14 +30,14 @@ export async function deliverOtp(user, code, purpose = 'REGISTER') {
   catch { fail(502, 'Không gửi được email OTP. Vui lòng thử lại.'); }
   finally { transport.close(); }
 }
-async function issueOtp(db, user, purpose) {
+async function issueOtp(db, user, purpose, extraClaims = {}) {
   const latest = await one('SELECT created_at FROM otp_verifications WHERE user_id=$1 AND purpose=$2 ORDER BY otp_id DESC LIMIT 1', [user.user_id, purpose], db);
   if (latest && Date.now() - new Date(latest.created_at).getTime() < 60000) fail(429, 'Vui lòng đợi 60 giây trước khi gửi lại OTP.');
   await db.query("UPDATE otp_verifications SET status='SUPERSEDED' WHERE user_id=$1 AND purpose=$2 AND status='PENDING'", [user.user_id, purpose]);
   const code = String(randomInt(100000, 1000000));
   const otp = await insert('otp_verifications', { user_id: user.user_id, email: user.email, phone: user.phone, otp_code: await bcrypt.hash(code, 10), purpose, expires_at: new Date(Date.now() + Number(process.env.OTP_EXPIRES_IN_SECONDS || 120) * 1000) }, db);
   await deliverOtp(user, code, purpose);
-  return { user_id: user.user_id, challenge_token: sign({ type: 'otp', user_id: user.user_id, otp_id: otp.otp_id, purpose }, '10m') };
+  return { user_id: user.user_id, challenge_token: sign({ type: 'otp', user_id: user.user_id, otp_id: otp.otp_id, purpose, ...extraClaims }, '10m') };
 }
 async function tokenPair(db, user, info, days) {
   const raw = randomBytes(48).toString('base64url');
@@ -94,14 +94,17 @@ export const AuthService = {
   },
   async resendOtp(data) {
     const challenge = data.challenge_token ? decode(data.challenge_token, 'otp') : null;
-    const purpose = choice(data.flow_type || challenge?.purpose || 'REGISTER', 'flow_type', ['REGISTER','RESET_PASSWORD','TRANSACTION']);
+    const purpose = choice(data.flow_type || challenge?.purpose || 'REGISTER', 'flow_type', ['REGISTER','RESET_PASSWORD','TRANSACTION','LOGIN_DEVICE']);
     if (challenge && challenge.purpose !== purpose) fail(400, 'OTP không đúng mục đích.');
     return withTransaction(async db => {
       const user = challenge ? await one('SELECT * FROM users WHERE user_id=$1', [challenge.user_id], db) : await findUser(data.identifier, db);
       if (!user) fail(404, 'Không tìm thấy tài khoản.');
       await db.query('SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE', [user.user_id]);
       if (purpose === 'REGISTER' && user.is_active) fail(409, 'Tài khoản đã được kích hoạt.');
-      return issueOtp(db, user, purpose);
+      const extraClaims = purpose === 'LOGIN_DEVICE' && challenge?.remember_me !== undefined
+        ? { remember_me: Boolean(challenge.remember_me) }
+        : {};
+      return issueOtp(db, user, purpose, extraClaims);
     });
   },
   async checkSession(claims, accessToken, refreshToken) {
@@ -115,7 +118,7 @@ export const AuthService = {
     return { access_token: accessToken, refresh_token: raw, expires_at: new Date(claims.exp * 1000).toISOString(), user_id: claims.user_id };
   },
   async verifyOtp(data) {
-    const purpose = choice(data.flow_type || 'REGISTER', 'flow_type', ['REGISTER','RESET_PASSWORD','TRANSACTION']);
+    const purpose = choice(data.flow_type || 'REGISTER', 'flow_type', ['REGISTER','RESET_PASSWORD','TRANSACTION','LOGIN_DEVICE']);
     if (!/^\d{6}$/.test(data.otp || '')) fail(400, 'OTP phải gồm 6 chữ số.');
     const challenge = data.challenge_token ? decode(data.challenge_token, 'otp') : null;
     if (challenge && challenge.purpose !== purpose) fail(400, 'OTP không đúng mục đích.');
@@ -133,6 +136,11 @@ export const AuthService = {
       if (purpose === 'REGISTER') {
         await db.query('UPDATE users SET is_active=TRUE WHERE user_id=$1', [user.user_id]);
         const session = await tokenPair(db, { ...user, is_active: true }, data.clientInfo || {}, 30);
+        return { verified: true, ...session };
+      }
+      if (purpose === 'LOGIN_DEVICE') {
+        const rememberMe = challenge?.remember_me ?? true;
+        const session = await tokenPair(db, user, data.clientInfo || {}, rememberMe ? 30 : 1);
         return { verified: true, ...session };
       }
       return purpose === 'RESET_PASSWORD' ? { reset_token: sign({ type: 'reset', user_id: user.user_id, otp_id: otp.otp_id }, '10m') } : { verified: true };
@@ -154,6 +162,29 @@ export const AuthService = {
         return { error: [attempts >= 5 ? 403 : 401, attempts >= 5 ? 'Tài khoản bị tạm khóa 15 phút.' : 'Tài khoản hoặc mật khẩu không chính xác.'] };
       }
       await db.query('UPDATE users SET failed_login_attempts=0, is_locked=FALSE, lock_until=NULL WHERE user_id=$1', [user.user_id]);
+      const hasExplicitDevice = typeof clientInfo.device_name === 'string' && clientInfo.device_name.trim().length > 0;
+      if (hasExplicitDevice) {
+        const deviceName = String(clientInfo.device_name).slice(0, 150);
+        const platform = String(clientInfo.platform || 'Flutter').slice(0, 100);
+        const knownDevice = await one(
+          'SELECT token_id FROM refresh_tokens WHERE user_id=$1 AND device_name=$2 AND platform=$3 LIMIT 1',
+          [user.user_id, deviceName, platform],
+          db,
+        );
+        if (!knownDevice) {
+          const otpChallenge = await issueOtp(db, user, 'LOGIN_DEVICE', {
+            remember_me: Boolean(remember_me),
+          });
+          return {
+            requires_otp: true,
+            otp_required: true,
+            flow_type: 'LOGIN_DEVICE',
+            email: user.email,
+            phone: user.phone,
+            ...otpChallenge,
+          };
+        }
+      }
       return tokenPair(db, { ...user, is_locked: false, lock_until: null }, clientInfo, remember_me ? 30 : 1);
     });
     if (result.error) fail(...result.error);

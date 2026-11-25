@@ -32,7 +32,15 @@ app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use((req,res,next) => { req.body ??= {}; next(); });
 const limitMessage = { success: false, message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau.' };
 app.use(rateLimit({ windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000), limit: Number(process.env.RATE_LIMIT_MAX || 300), standardHeaders: 'draft-7', legacyHeaders: false, message: limitMessage }));
-const authLimit = rateLimit({ windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 300000), limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 10), standardHeaders: 'draft-7', legacyHeaders: false, message: limitMessage });
+const authLimit = rateLimit({
+  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 300000),
+  limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 10),
+  skipSuccessfulRequests: true,
+  skip: req => req.method === 'GET' || req.path === '/logout',
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: limitMessage,
+});
 const sensitiveActionLimit = rateLimit({ windowMs: Number(process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS || 900000), limit: Number(process.env.SENSITIVE_RATE_LIMIT_MAX || 40), standardHeaders: 'draft-7', legacyHeaders: false, message: limitMessage });
 const routes = { auth: authRoutes, user: userRoutes, loans: loanRoutes, collaterals: collateralRoutes, 'credit-profile': creditRoutes, 'credit-reports': reportRoutes, 'debt-strategies': debtRoutes, 'payment-schedules': scheduleRoutes, notifications: notificationRoutes, simulations: simulationRoutes, storage: storageRoutes };
 for (const prefix of new Set([process.env.API_PREFIX || '/api/v1', '/api', ''])) {

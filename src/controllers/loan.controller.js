@@ -22,6 +22,10 @@ export const deleteLoan = endpoint(async req => {
   booleans(req.body, ['soft_delete']);
   const isHardDelete = req.body.soft_delete === false;
   const result = await withTransaction(async db => {
+    await db.query(
+      "DELETE FROM notifications WHERE user_id=$1 AND notification_type IN ('OVERDUE_ALERT', 'PAYMENT_REMINDER') AND schedule_id IN (SELECT schedule_id FROM payment_schedules WHERE loan_id=$2)",
+      [req.user.user_id, id(req.params.loanId)],
+    );
     const target = found(await one(
       isHardDelete
         ? 'DELETE FROM loans WHERE loan_id=$1 AND user_id=$2 RETURNING loan_id, loan_name, outstanding_amount'

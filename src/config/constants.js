@@ -70,3 +70,13 @@ export const CIVIL_MAX_INTEREST_RATE_PCT = 20;
 
 // Trần lãi suất hợp lý cho khoản vay TCTD / thẻ tín dụng
 export const TCTD_MAX_INTEREST_RATE_PCT = 100;
+
+// Quy tắc cho vay tín chấp / không tài sản bảo đảm (CONSUMER, CREDIT_CARD)
+export const UNSECURED_LOAN_RULES = {
+  MIN_MONTHLY_INCOME: 3000000, // Thu nhập tối thiểu 3.000.000 đ/tháng
+  MIN_LOAN_AMOUNT: 5000000, // Khoản vay tối thiểu 5.000.000 đ
+  MAX_LOAN_CAP: 500000000, // Trần tối đa 500.000.000 đ
+  INCOME_MULTIPLIER: 12, // Tối đa 12 lần thu nhập hàng tháng
+  MAX_ACTIVE_LOANS: 3, // Tối đa 3 khoản vay tín chấp đang mở
+  MAX_DTI_RATIO: 0.60, // Tổng nghĩa vụ trả nợ hàng tháng / thu nhập <= 60%
+};

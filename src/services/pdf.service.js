@@ -271,12 +271,18 @@ export async function generateFinancialPdfBuffer(userId) {
   const totalPrincipal = loans.reduce((s, l) => s + Number(l.principal_amount || 0), 0);
   const totalOutstanding = loans.reduce((s, l) => s + Number(l.outstanding_amount || 0), 0);
   const activeCount = loans.filter(l => ['ACTIVE', 'OVERDUE'].includes(String(l.status).toUpperCase())).length;
+  const isAssetAppraised = a => Boolean(a.legal_document_url && String(a.legal_document_url).trim());
+  const appraisedAssets = assets.filter(isAssetAppraised);
+  const unappraisedAssets = assets.filter(a => !isAssetAppraised(a));
   const totalAssetValue = assets.reduce((s, a) => s + Number(a.asset_value || 0), 0);
-  const creditScore = profile?.credit_score ?? user.cic_score ?? null;
-  const dtiPct = profile?.dti_ratio != null ? Number(profile.dti_ratio) * 100 : null;
-  const ltvPct = profile?.ltv_ratio != null ? Number(profile.ltv_ratio) * 100 : null;
-  const onTimePct = profile?.on_time_payment_rate != null ? Number(profile.on_time_payment_rate) * 100 : null;
-  const utilizationPct = profile?.credit_utilization != null ? Number(profile.credit_utilization) * 100 : null;
+  const appraisedAssetValue = appraisedAssets.reduce((s, a) => s + Number(a.asset_value || 0), 0);
+  const unappraisedAssetValue = unappraisedAssets.reduce((s, a) => s + Number(a.asset_value || 0), 0);
+  const hasLoans = loans.length > 0;
+  const creditScore = hasLoans ? (profile?.credit_score ?? user.cic_score ?? null) : null;
+  const dtiPct = hasLoans && profile?.dti_ratio != null ? Number(profile.dti_ratio) * 100 : null;
+  const ltvPct = hasLoans && profile?.ltv_ratio != null ? Number(profile.ltv_ratio) * 100 : null;
+  const onTimePct = hasLoans && profile?.on_time_payment_rate != null ? Number(profile.on_time_payment_rate) * 100 : null;
+  const utilizationPct = hasLoans && profile?.credit_utilization != null ? Number(profile.credit_utilization) * 100 : null;
   const overdueAmount = Number(scheduleStats?.overdue_amount || 0);
 
   const cardGap = 10;
@@ -285,8 +291,10 @@ export async function generateFinancialPdfBuffer(userId) {
     {
       label: 'ĐIỂM TÍN DỤNG (CIC / NỘI BỘ)',
       value: creditScore != null ? `${creditScore} / 850` : 'Chưa có',
-      sub: `${scoreRatingVn(creditScore)} • Rủi ro: ${riskLevelVn(profile?.risk_level)}`,
-      color: '#0D47A1',
+      sub: hasLoans
+        ? `${scoreRatingVn(creditScore)} • Rủi ro: ${riskLevelVn(profile?.risk_level)}`
+        : 'Chưa có dữ liệu khoản vay',
+      color: creditScore != null ? '#0D47A1' : '#64748B',
     },
     {
       label: 'TỔNG DƯ NỢ HIỆN TẠI',
@@ -296,14 +304,24 @@ export async function generateFinancialPdfBuffer(userId) {
     },
     {
       label: 'TỶ LỆ NỢ / THU NHẬP (DTI)',
-      value: dtiPct != null ? `${dtiPct.toFixed(1)}%` : 'Chưa tính',
-      sub: dtiPct == null ? 'Thiếu dữ liệu kỳ trả' : dtiPct > 40 ? 'Mức cảnh báo (>40%)' : 'Ngưỡng kiểm soát an toàn',
+      value: !hasLoans ? '0.0%' : (dtiPct != null ? `${dtiPct.toFixed(1)}%` : 'Chưa tính'),
+      sub: !hasLoans
+        ? 'Không có dư nợ'
+        : (dtiPct == null ? 'Thiếu dữ liệu kỳ trả' : dtiPct > 40 ? 'Mức cảnh báo (>40%)' : 'Ngưỡng kiểm soát an toàn'),
       color: dtiPct != null && dtiPct > 40 ? '#D97706' : '#16A34A',
     },
     {
       label: 'TỶ LỆ VAY / TÀI SẢN (LTV)',
-      value: ltvPct != null ? `${ltvPct.toFixed(1)}%` : 'Chưa có TSĐB',
-      sub: `Tổng TSĐB: ${formatVnd(totalAssetValue)}`,
+      value: ltvPct != null
+        ? `${ltvPct.toFixed(1)}%`
+        : (assets.length > 0 ? 'Chưa gắn vay' : 'Chưa có TSĐB'),
+      sub: ltvPct != null
+        ? `TSĐB đã thẩm định: ${formatVnd(appraisedAssetValue)}`
+        : (appraisedAssetValue > 0
+            ? `Đã thẩm định: ${formatVnd(appraisedAssetValue)}`
+            : (totalAssetValue > 0
+                ? `${unappraisedAssets.length} tài sản chưa thẩm định`
+                : 'Chưa ghi nhận tài sản')),
       color: ltvPct != null && ltvPct > 70 ? '#D97706' : '#0D47A1',
     },
     {
@@ -453,13 +471,14 @@ export async function generateFinancialPdfBuffer(userId) {
       doc.save();
       doc.rect(40, y, pageWidth, rowH).fillAndStroke(idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC', '#E2E8F0');
       const cert = asset.certificate_number ? `\nSố GCN: ${asset.certificate_number}` : '';
+      const appraisalText = isAssetAppraised(asset) ? 'Đã thẩm định' : 'Chưa thẩm định';
       const cells = [
         String(idx + 1),
         `${asset.asset_name || ''}${cert}`,
         assetTypeVn(asset.asset_type),
         formatVnd(asset.asset_value),
         formatDateOnlyVn(asset.valuation_date),
-        asset.linked_loans || 'Chưa gán',
+        `${asset.linked_loans || 'Chưa gán'}\n${appraisalText}`,
       ];
       let cx = 40;
       cells.forEach((val, cIdx) => {
@@ -475,8 +494,12 @@ export async function generateFinancialPdfBuffer(userId) {
     ensureSpace(32);
     doc.save();
     doc.rect(40, y, pageWidth, 22).fillAndStroke('#F1F5F9', '#CBD5E1');
-    setBold(8).fillColor('#0F172A').text(textSafe(`TỔNG GIÁ TRỊ TÀI SẢN BẢO ĐẢM (${assets.length} tài sản)`), 48, y + 6, { width: 250 });
-    setBold(8).fillColor('#0D47A1').text(textSafe(formatVnd(totalAssetValue)), 322, y + 6, { width: 86, align: 'right' });
+    setBold(7.5).fillColor('#0F172A').text(
+      textSafe(`TỔNG (${assets.length} tài sản) • Đã thẩm định: ${formatVnd(appraisedAssetValue)} • Chưa thẩm định: ${formatVnd(unappraisedAssetValue)}`),
+      48,
+      y + 6,
+      { width: pageWidth - 16 },
+    );
     doc.restore();
     y += 34;
   }

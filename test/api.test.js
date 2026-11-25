@@ -21,8 +21,8 @@ const { buildSchedule, addMonths } = await import('../src/services/loan.service.
 let db, server, base, token, userId, loanId, scheduleId, secondToken, capturedOtp, challenge;
 const originalLog = console.log;
 console.log = (...args) => { const m = String(args[0]).match(/\[DEV OTP\].*: (\d{6})/); if (m) capturedOtp = m[1]; else originalLog(...args); };
-async function request(path, { method = 'GET', body, auth = token } = {}) {
-  const response = await fetch(base + path, { method, headers: { ...(auth ? { Authorization: `Bearer ${auth}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+async function request(path, { method = 'GET', body, auth = token, headers = {} } = {}) {
+  const response = await fetch(base + path, { method, headers: { ...(auth ? { Authorization: `Bearer ${auth}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
   return { status: response.status, ...(await response.json()) };
 }
 function ok(response, status = 200) { assert.equal(response.status, status, JSON.stringify(response)); assert.equal(response.success, true); return response.data; }
@@ -425,7 +425,7 @@ test('Vietnam law: Civil Code Art 296 multi-loan collateral, LTV cap, Art 468 ra
 
 test('Notifications & reminders: balance fluctuation, monthly statement and due dispatcher', async () => {
   const { dispatchDueNotifications, generateMonthlyStatements } = await import('../src/services/notification.service.js');
-  const fresh=ok(await request('/auth/register',{auth:null,method:'POST',body:{full_name:'Notif User',email:'notif@example.com',password:'Password123!'}}),201);
+  const fresh=ok(await request('/auth/register',{auth:null,method:'POST',body:{full_name:'Notif User',email:'notif@example.com',password:'Password123!',monthly_income:50000000}}),201);
   ok(await request('/auth/verify-otp',{auth:fresh.challenge_token,method:'POST',body:{otp:capturedOtp,flow_type:'REGISTER'}}));
   const login=ok(await request('/auth/login',{auth:null,method:'POST',body:{identifier:'notif@example.com',password:'Password123!'}}));
   const auth=login.accessToken;
@@ -544,6 +544,8 @@ test('credit_score is null and risk_level is UNKNOWN when monthly_income is miss
 
   // Khi cập nhật thu nhập (DTI rất thấp), LTV = 76% (> 70%) vẫn nâng risk_level lên MEDIUM
   ok(await request('/user/profile', { auth, method: 'PUT', body: { monthly_income: 100000000 } }));
+  const autoUpdatedProfile = ok(await request('/credit-profile', { auth }));
+  assert.ok(autoUpdatedProfile.dti_ratio !== null && autoUpdatedProfile.dti_ratio < 5);
   const scoredProfile = ok(await request('/credit-profile/recalculate', { auth, method: 'POST', body: {} }));
   assert.ok(scoredProfile.credit_score >= 300 && scoredProfile.credit_score <= 850);
   assert.equal(scoredProfile.risk_level, 'MEDIUM');
@@ -568,7 +570,7 @@ test('binha10k56@gmail.com seed data recalculates cleanly with consistent DTI, L
 });
 
 test('DELETE /notifications/:id and DELETE /notifications enforce ownership and remove notifications', async () => {
-  const fresh = ok(await request('/auth/register', { auth: null, method: 'POST', body: { full_name: 'Notif Del User', email: 'notifdel@example.com', password: 'Password123!' } }), 201);
+  const fresh = ok(await request('/auth/register', { auth: null, method: 'POST', body: { full_name: 'Notif Del User', email: 'notifdel@example.com', password: 'Password123!', monthly_income: 50000000 } }), 201);
   ok(await request('/auth/verify-otp', { auth: fresh.challenge_token, method: 'POST', body: { otp: capturedOtp, flow_type: 'REGISTER' } }));
   const login = ok(await request('/auth/login', { auth: null, method: 'POST', body: { identifier: 'notifdel@example.com', password: 'Password123!' } }));
   const auth = login.accessToken;
@@ -695,4 +697,155 @@ test('editLoan: paid loan only allows administrative fields; unpaid loan allows 
 
   // Settled loan 106 cannot be edited at all
   assert.equal((await request('/loans/106', { auth, method: 'PUT', body: { loan_name: 'Blocked' } })).status, 409);
+});
+
+test('Unsecured loan rules: min income, min/max cap, 12x income limit, DTI <= 60%, and max 3 active loans', async () => {
+  const reg = ok(await request('/auth/register', {
+    auth: null,
+    method: 'POST',
+    body: { full_name: 'Unsecured Tester', email: 'unsecured@example.com', password: 'Password123!', monthly_income: 2000000 },
+  }), 201);
+  ok(await request('/auth/verify-otp', { auth: reg.challenge_token, method: 'POST', body: { otp: capturedOtp, flow_type: 'REGISTER' } }));
+  const login = ok(await request('/auth/login', { auth: null, method: 'POST', body: { identifier: 'unsecured@example.com', password: 'Password123!' } }));
+  const auth = login.accessToken;
+
+  // 1. Thu nhập < 3.000.000 đ/tháng bị từ chối (400)
+  const lowIncomeRes = await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Vay tín chấp 1', lender: 'VPBank', loan_type_code: 'CONSUMER', principal_amount: 10000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  });
+  assert.equal(lowIncomeRes.status, 400);
+
+  // Nâng thu nhập lên 10.000.000 đ/tháng -> hạn mức tối đa 12x = 120.000.000 đ
+  ok(await request('/user/profile', { auth, method: 'PUT', body: { monthly_income: 10000000 } }));
+
+  // 2. Khoản vay < 5.000.000 đ bị từ chối (400)
+  const tooSmallRes = await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Vay quá nhỏ', lender: 'VPBank', loan_type_code: 'CONSUMER', principal_amount: 4000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  });
+  assert.equal(tooSmallRes.status, 400);
+
+  // 3. Vượt hạn mức 12x thu nhập (130tr > 120tr) bị từ chối (400)
+  const overIncomeCapRes = await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Vay vượt hạn mức', lender: 'VPBank', loan_type_code: 'CONSUMER', principal_amount: 130000000, interest_rate: 12, term_months: 36, start_date: '2030-01-01' },
+  });
+  assert.equal(overIncomeCapRes.status, 400);
+
+  // 4. DTI > 60% (vay 80tr trong 12 tháng -> ~7.5tr/tháng > 6tr/tháng) bị từ chối (400)
+  const highDtiRes = await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Vay áp lực DTI', lender: 'VPBank', loan_type_code: 'CONSUMER', principal_amount: 80000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  });
+  assert.equal(highDtiRes.status, 400);
+
+  // 5. Tạo tối đa 3 khoản vay tín chấp hợp lệ
+  const l1 = ok(await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Tín chấp 1', lender: 'VPBank', loan_type_code: 'CONSUMER', principal_amount: 12000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  }), 201);
+  ok(await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Tín chấp 2', lender: 'TPBank', loan_type_code: 'CONSUMER', principal_amount: 12000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  }), 201);
+  ok(await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Thẻ tín dụng 3', lender: 'VIB', loan_type_code: 'CREDIT_CARD', principal_amount: 12000000, interest_rate: 20, term_months: 12, start_date: '2030-01-01' },
+  }), 201);
+
+  // Khoản vay tín chấp thứ 4 bị từ chối (400)
+  const fourthRes = await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Tín chấp 4', lender: 'MBBank', loan_type_code: 'CONSUMER', principal_amount: 10000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  });
+  assert.equal(fourthRes.status, 400);
+
+  // Sau khi tất toán 1 khoản (SETTLED), có thể tạo lại khoản thứ 3 mới thành công
+  ok(await request(`/loans/${l1.loan_id}`, { auth, method: 'PUT', body: { status: 'SETTLED', remaining_principal: 0 } }));
+  ok(await request('/loans', {
+    auth,
+    method: 'POST',
+    body: { loan_name: 'Tín chấp mới sau tất toán', lender: 'MBBank', loan_type_code: 'CONSUMER', principal_amount: 10000000, interest_rate: 12, term_months: 12, start_date: '2030-01-01' },
+  }), 201);
+});
+
+test('First-time login on a new device requires LOGIN_DEVICE OTP, then trusts that device on subsequent logins', async () => {
+  const reg = ok(await request('/api/v1/auth/register', {
+    auth: null,
+    method: 'POST',
+    body: { full_name: 'New Device User', email: 'newdevice@example.com', password: 'Password123!' },
+  }), 201);
+  ok(await request('/api/v1/auth/verify-otp', {
+    auth: null,
+    method: 'POST',
+    body: { otp: capturedOtp, flow_type: 'REGISTER', challenge_token: reg.challenge_token },
+  }));
+
+  const newDeviceHeaders = {
+    'x-device-name': 'Pixel 9 Pro',
+    'x-platform': 'Flutter - Android',
+  };
+
+  // 1. Lần đầu đăng nhập trên thiết bị mới -> yêu cầu OTP, chưa cấp accessToken
+  const firstLogin = ok(await request('/api/v1/auth/login', {
+    auth: null,
+    method: 'POST',
+    headers: newDeviceHeaders,
+    body: { identifier: 'newdevice@example.com', password: 'Password123!', remember_me: true },
+  }));
+  assert.equal(firstLogin.requires_otp, true);
+  assert.equal(firstLogin.flow_type, 'LOGIN_DEVICE');
+  assert.ok(firstLogin.challenge_token);
+  assert.equal(firstLogin.accessToken, undefined);
+  const firstOtp = capturedOtp;
+
+  // 2. Nhập sai OTP -> 400
+  const wrongOtp = await request('/api/v1/auth/verify-otp', {
+    auth: null,
+    method: 'POST',
+    headers: newDeviceHeaders,
+    body: { otp: firstOtp === '000000' ? '999999' : '000000', flow_type: 'LOGIN_DEVICE', challenge_token: firstLogin.challenge_token },
+  });
+  assert.equal(wrongOtp.status, 400);
+
+  // 3. Nhập đúng OTP -> cấp accessToken + refreshToken + ghi nhận thiết bị
+  const verified = ok(await request('/api/v1/auth/verify-otp', {
+    auth: null,
+    method: 'POST',
+    headers: newDeviceHeaders,
+    body: { otp: firstOtp, flow_type: 'LOGIN_DEVICE', challenge_token: firstLogin.challenge_token },
+  }));
+  assert.equal(verified.verified, true);
+  assert.ok(verified.accessToken);
+  assert.ok(verified.refreshToken);
+
+  // 4. Đăng nhập lại trên cùng thiết bị đã xác thực -> vào thẳng không cần OTP
+  const secondLogin = ok(await request('/api/v1/auth/login', {
+    auth: null,
+    method: 'POST',
+    headers: newDeviceHeaders,
+    body: { identifier: 'newdevice@example.com', password: 'Password123!', remember_me: true },
+  }));
+  assert.equal(secondLogin.requires_otp, undefined);
+  assert.ok(secondLogin.accessToken);
+
+  // 5. Đăng nhập trên thiết bị mới khác (sau khi qua cooldown 60s) -> yêu cầu OTP lại
+  await pool.query("UPDATE otp_verifications SET created_at=NOW()-INTERVAL '2 minutes' WHERE user_id=$1", [reg.user_id]);
+  const otherDeviceLogin = ok(await request('/api/v1/auth/login', {
+    auth: null,
+    method: 'POST',
+    headers: { 'x-device-name': 'iPad Air', 'x-platform': 'Flutter - iOS' },
+    body: { identifier: 'newdevice@example.com', password: 'Password123!', remember_me: true },
+  }));
+  assert.equal(otherDeviceLogin.requires_otp, true);
+  assert.equal(otherDeviceLogin.flow_type, 'LOGIN_DEVICE');
 });

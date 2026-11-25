@@ -1,5 +1,10 @@
 import { withTransaction } from '../config/db.js';
-import { MAX_LTV_BY_ASSET_TYPE, CIVIL_MAX_INTEREST_RATE_PCT, TCTD_MAX_INTEREST_RATE_PCT } from '../config/constants.js';
+import {
+  MAX_LTV_BY_ASSET_TYPE,
+  CIVIL_MAX_INTEREST_RATE_PCT,
+  TCTD_MAX_INTEREST_RATE_PCT,
+  UNSECURED_LOAN_RULES,
+} from '../config/constants.js';
 import { rows, one, found, insert, update, text, number, choice, date, id, fail } from '../utils/api.js';
 import { loanDto } from '../utils/dto.js';
 import { notifyBalanceFluctuation, triggerImmediateDispatch } from './notification.service.js';
@@ -154,6 +159,99 @@ export async function loanInput(body, existing, db) {
   if (!existing) data.outstanding_amount = body.remaining_principal === undefined ? data.principal_amount : number(body.remaining_principal, 'remaining_principal', 0, data.principal_amount);
   return data;
 }
+export async function validateUnsecuredLoanCapacity(userId, data, remaining, db) {
+  const user = found(await one('SELECT user_id, monthly_income FROM users WHERE user_id=$1 FOR UPDATE', [userId], db));
+  const monthlyIncome = Number(user.monthly_income || 0);
+  const {
+    MIN_MONTHLY_INCOME,
+    MIN_LOAN_AMOUNT,
+    MAX_LOAN_CAP,
+    INCOME_MULTIPLIER,
+    MAX_ACTIVE_LOANS,
+    MAX_DTI_RATIO,
+  } = UNSECURED_LOAN_RULES;
+
+  if (monthlyIncome < MIN_MONTHLY_INCOME) {
+    fail(
+      400,
+      `Thu nhập hàng tháng tối thiểu ${MIN_MONTHLY_INCOME.toLocaleString('vi-VN')} đ để đăng ký khoản vay tín chấp không tài sản bảo đảm.`,
+    );
+  }
+
+  const principal = Number(data.principal_amount || 0);
+  if (principal < MIN_LOAN_AMOUNT) {
+    fail(400, `Khoản vay tín chấp tối thiểu là ${MIN_LOAN_AMOUNT.toLocaleString('vi-VN')} đ.`);
+  }
+  if (principal > MAX_LOAN_CAP) {
+    fail(400, `Khoản vay tín chấp tối đa không vượt quá ${MAX_LOAN_CAP.toLocaleString('vi-VN')} đ.`);
+  }
+
+  const activeUnsecured = await rows(
+    `SELECT l.loan_id, l.loan_type, l.outstanding_amount, l.principal_amount, l.interest_rate, l.term_months, l.interest_method
+     FROM loans l
+     WHERE l.user_id=$1
+       AND l.status IN ('ACTIVE', 'OVERDUE', 'PENDING')
+       AND l.loan_type IN ('CONSUMER', 'CREDIT_CARD')
+       AND NOT EXISTS (SELECT 1 FROM loan_collaterals lc WHERE lc.loan_id=l.loan_id)
+       AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.loan_id=l.loan_id)`,
+    [userId],
+    db,
+  );
+
+  if (activeUnsecured.length >= MAX_ACTIVE_LOANS) {
+    fail(400, `Bạn đã đạt giới hạn tối đa ${MAX_ACTIVE_LOANS} khoản vay tín chấp đang mở. Vui lòng tất toán bớt trước khi vay thêm.`);
+  }
+
+  const maxAllowedByIncome = Math.min(monthlyIncome * INCOME_MULTIPLIER, MAX_LOAN_CAP);
+  const currentUnsecuredDebt = activeUnsecured.reduce(
+    (sum, l) => sum + Number(l.outstanding_amount ?? l.principal_amount ?? 0),
+    0,
+  );
+  const newLoanDebt = Number(data.outstanding_amount ?? principal);
+  if (currentUnsecuredDebt + newLoanDebt > maxAllowedByIncome) {
+    const remainingCap = Math.max(0, Math.round(maxAllowedByIncome - currentUnsecuredDebt));
+    fail(
+      400,
+      `Tổng dư nợ vay tín chấp vượt hạn mức tối đa (${INCOME_MULTIPLIER}x thu nhập, tối đa ${MAX_LOAN_CAP.toLocaleString('vi-VN')} đ). Hạn mức tín chấp còn lại của bạn: ${remainingCap.toLocaleString('vi-VN')} đ.`,
+    );
+  }
+
+  const existingActive = await rows(
+    `SELECT l.loan_id, l.outstanding_amount, l.principal_amount, l.interest_rate, l.term_months, l.interest_method,
+       (SELECT s.total_amount FROM payment_schedules s WHERE s.loan_id=l.loan_id AND s.status<>'PAID'
+        ORDER BY s.due_date ASC, s.installment_number ASC LIMIT 1) AS next_due
+     FROM loans l
+     WHERE l.user_id=$1 AND l.status IN ('ACTIVE', 'OVERDUE') AND l.outstanding_amount>0`,
+    [userId],
+    db,
+  );
+
+  const existingMonthly = existingActive.reduce((sum, l) => {
+    if (l.next_due !== null && l.next_due !== undefined) {
+      return sum + Number(l.next_due);
+    }
+    const bal = Number(l.outstanding_amount ?? l.principal_amount ?? 0);
+    const months = Math.max(1, Number(l.term_months || 1));
+    const rate = Number(l.interest_rate || 0);
+    const base = l.interest_method === 'FLAT' ? Number(l.principal_amount || bal) : bal;
+    return sum + bal / months + (base * rate) / 12;
+  }, 0);
+
+  const firstNewInstallment = buildSchedule({
+    ...data,
+    loan_id: 0,
+    remaining_term_months: remaining,
+  })[0];
+  const newMonthly = firstNewInstallment ? Number(firstNewInstallment.total_amount) : 0;
+  const projectedDti = (existingMonthly + newMonthly) / monthlyIncome;
+  if (projectedDti > MAX_DTI_RATIO) {
+    fail(
+      400,
+      `Tỷ lệ nghĩa vụ trả nợ trên thu nhập (DTI dự kiến ${(projectedDti * 100).toFixed(1)}%) vượt ngưỡng an toàn ${Math.round(MAX_DTI_RATIO * 100)}%.`,
+    );
+  }
+}
+
 export async function createLoan(userId, body) {
   const data = await loanInput(body);
   const remaining = body.remaining_term_months === undefined ? undefined : number(body.remaining_term_months, 'remaining_term_months', 1, data.term_months, true);
@@ -167,6 +265,13 @@ export async function createLoan(userId, body) {
     fail(400, 'contract_file_key phải là file_key hợp lệ.');
   }
   const loan = await withTransaction(async db => {
+    const isUnsecuredCredit =
+      collateralIds.length === 0 &&
+      ['CONSUMER', 'CREDIT_CARD'].includes(data.loan_type) &&
+      !['CLOSED', 'SETTLED'].includes(String(data.status ?? 'ACTIVE').toUpperCase());
+    if (isUnsecuredCredit) {
+      await validateUnsecuredLoanCapacity(userId, data, remaining, db);
+    }
     const l = await insert('loans', { ...data, user_id: userId }, db);
     const nextOnly = buildSchedule({ ...l, remaining_term_months: remaining }).slice(0, 1);
     for (const schedule of nextOnly) await insert('payment_schedules', schedule, db);
