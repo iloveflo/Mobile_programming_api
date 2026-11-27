@@ -77,7 +77,7 @@ flowchart TB
 - **Vietnam Civil Code Art. 296 Shared Collateral & LTV Caps (`MAX_LTV_BY_ASSET_TYPE`):**
   - `REAL_ESTATE`: **80%** (`0.80`) · `VEHICLE`: **70%** (`0.70`) · `SAVINGS`: **95%** (`0.95`) · `OTHER`: **70%** (`0.70`)
   - Supports many-to-many collateral linking via `loan_collaterals` (`priority_order`, `secured_amount`) and prevents total secured debt from exceeding either `asset_value` or `asset_value * max_ltv_ratio`.
-- **Unsecured Loan Eligibility (`UNSECURED_LOAN_RULES`):** For unsecured `CONSUMER` / `CREDIT_CARD` loans: `monthly_income >= 3,000,000 VND`, `principal >= 5,000,000 VND`, `max_active_loans < 3`, total unsecured debt $\le \min(\text{monthly\_income} \times 12,\ 500,000,000\text{ VND})$, and projected $\text{DTI} \le 60\%$.
+- **Unsecured Loan Eligibility (`UNSECURED_LOAN_RULES`):** For unsecured `CONSUMER` / `CREDIT_CARD` loans: `monthly_income >= 3,000,000 VND`, `principal >= 5,000,000 VND`, `max_active_loans < 3`, total unsecured debt ≤ `min(monthly_income × 12, 500,000,000 VND)`, and projected DTI ≤ `60%`.
 - **Lifecycle Guards:** Paid loans only permit administrative metadata edits (`409` on principal/term/collateral edits); `SETTLED`/`CLOSED` loans block edits (`409`) and purge unpaid schedules.
 
 ### 3. Personal Credit Health & Periodic Reports (`credit.service.js`, `credit.controller.js`)
