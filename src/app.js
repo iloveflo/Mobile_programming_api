@@ -46,6 +46,7 @@ const routes = { auth: authRoutes, user: userRoutes, loans: loanRoutes, collater
 for (const prefix of new Set([process.env.API_PREFIX || '/api/v1', '/api', ''])) {
   app.use(`${prefix}/auth`, authLimit);
   app.use(`${prefix}/storage/presigned-url`, sensitiveActionLimit);
+  app.use(`${prefix}/user/ekyc-verify`, sensitiveActionLimit);
   app.use(`${prefix}/user/ekyc`, sensitiveActionLimit);
   for (const [name, router] of Object.entries(routes)) app.use(`${prefix}/${name}`, router);
 }

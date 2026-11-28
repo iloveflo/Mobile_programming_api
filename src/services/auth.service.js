@@ -190,17 +190,45 @@ export const AuthService = {
     if (result.error) fail(...result.error);
     return result;
   },
-  async refresh(raw) {
+  async refresh(raw, io = null) {
     if (typeof raw !== 'string' || !raw || raw.length > 1000) fail(401, 'Refresh token không hợp lệ.');
-    return withTransaction(async db => {
-      const session = await one('SELECT * FROM refresh_tokens WHERE token=$1 FOR UPDATE', [hashToken(raw)], db);
-      if (!session || session.revoked_at || new Date(session.expires_at) <= new Date()) fail(401, 'Refresh token không hợp lệ hoặc đã hết hạn.');
+    const rawHash = hashToken(raw);
+    const outcome = await withTransaction(async db => {
+      const session = await one(
+        'SELECT * FROM refresh_tokens WHERE token=$1 OR previous_token=$1 FOR UPDATE',
+        [rawHash],
+        db,
+      );
+      if (!session) fail(401, 'Refresh token không hợp lệ hoặc đã hết hạn.');
+      if (session.previous_token && session.previous_token === rawHash && session.token !== rawHash) {
+        // Phát hiện Refresh Token Reuse: thu hồi ngay phiên hiện tại (commit trước khi ném 401).
+        await db.query(
+          'UPDATE refresh_tokens SET revoked_at=COALESCE(revoked_at, NOW()) WHERE token_id=$1',
+          [session.token_id],
+        );
+        return { reusedSessionId: session.token_id };
+      }
+      if (session.revoked_at || new Date(session.expires_at) <= new Date()) {
+        fail(401, 'Refresh token không hợp lệ hoặc đã hết hạn.');
+      }
       const user = await one('SELECT * FROM users WHERE user_id=$1', [session.user_id], db); checkUser(user);
       const replacement = randomBytes(48).toString('base64url');
       // Rotation preserves the original remember-me deadline, never extending a 1-day session.
-      await db.query('UPDATE refresh_tokens SET token=$1,last_active=NOW(),expires_at=LEAST(expires_at,NOW()+INTERVAL \'7 days\') WHERE token_id=$2', [hashToken(replacement), session.token_id]);
-      return sessionData(user, session, replacement);
+      await db.query(
+        "UPDATE refresh_tokens SET previous_token=token, token=$1, last_active=NOW(), expires_at=LEAST(expires_at, NOW()+INTERVAL '7 days') WHERE token_id=$2",
+        [hashToken(replacement), session.token_id],
+      );
+      return { data: sessionData(user, session, replacement) };
     });
+    if (outcome.reusedSessionId) {
+      if (io) {
+        const room = `session_${outcome.reusedSessionId}`;
+        io.to(room).emit('session_revoked', { session_id: String(outcome.reusedSessionId), reason: 'token_reuse' });
+        io.in(room).disconnectSockets(true);
+      }
+      fail(401, 'Phát hiện sử dụng lại refresh token. Phiên đăng nhập đã bị thu hồi để bảo vệ tài khoản.');
+    }
+    return outcome.data;
   },
   async changePassword(userId, data) {
     const hash = await bcrypt.hash(password(data.new_password), 10);

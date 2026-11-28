@@ -8,7 +8,7 @@ export const verifyOtp = endpoint(req => AuthService.verifyOtp({
 }));
 export const resendOtp = endpoint(req => AuthService.resendOtp({ ...req.body, challenge_token: req.body.challenge_token || req.headers.authorization?.replace(/^Bearer /i, '') }));
 export const login = endpoint(req => AuthService.login({ ...req.body, clientInfo: { device_name: req.headers['x-device-name'], platform: req.headers['x-platform'], ip_address: req.ip } }));
-export const refreshToken = endpoint(req => AuthService.refresh(req.body.refreshToken || req.body.refresh_token));
+export const refreshToken = endpoint(req => AuthService.refresh(req.body.refreshToken || req.body.refresh_token, req.app?.get?.('io')));
 export const checkSession = endpoint(req => AuthService.checkSession(req.user, req.headers.authorization.split(' ')[1], req.headers['x-refresh-token']));
 export const getActiveSessions = endpoint(async req => (await rows('SELECT token_id,device_name,platform,ip_address,location,last_active,expires_at FROM refresh_tokens WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>NOW() ORDER BY last_active DESC', [req.user.user_id])).map(s => ({ ...s, id: String(s.token_id), is_current: String(s.token_id) === String(req.user.session_id) })));
 export const revokeSession = endpoint(async req => {

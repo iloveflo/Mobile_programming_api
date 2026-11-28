@@ -76,6 +76,8 @@ test('login, short session, refresh rotation, revocation and no password leak', 
   const session = (await pool.query('SELECT * FROM refresh_tokens WHERE user_id=$1 ORDER BY token_id DESC LIMIT 1',[userId])).rows[0]; assert.notEqual(session.token,result.refreshToken); assert.ok(new Date(session.expires_at)-Date.now()<86401000);
   const refreshed = ok(await request('/api/v1/auth/refresh-token',{method:'POST',auth:null,body:{refresh_token:result.refreshToken}})); token=refreshed.access_token;
   assert.equal((await request('/api/v1/auth/refresh-token',{method:'POST',auth:null,body:{refreshToken:result.refreshToken}})).status,401);
+  assert.equal((await request('/api/v1/auth/sessions')).status,401);
+  token=ok(await request('/api/v1/auth/login',{method:'POST',auth:null,body:{identifier:'test@example.com',password:'Password123!'}})).accessToken;
   const sessions=ok(await request('/api/v1/auth/sessions')); assert.equal(sessions.length,2); assert.ok(sessions.some(s=>s.is_current));
   const currentSession=sessions.find(s=>s.is_current);
   ok(await request(`/api/v1/auth/sessions/${currentSession.id}`,{method:'DELETE'})); assert.equal((await request('/api/v1/user/profile')).status,401);
